@@ -1,0 +1,12 @@
+# Build output
+build/
+*.apk
+*.apk.idsig
+
+# Signing key: keep it private and backed up (Android only accepts updates signed with the same key)
+signing.keystore
+*.keystore
+*.jks
+
+# Local JDK + Android SDK, if you keep them inside the repository
+android-toolchain/
