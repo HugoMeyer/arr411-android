@@ -35,10 +35,12 @@
 - Detects the **IMDb, TMDB and TheTVDB** IDs on the torrent page, and the album from C411's music card (MusicBrainz, Deezer and Discogs links).
 - Handles C411's **"Téléchargement normal"** prompt automatically when it appears.
 - **Badges** for torrents already in qBittorrent (`✔ qBit` / `⇩ 42 %`) in result lists, plus a status badge on torrent pages.
+- **Score badges** (0 to 100) on every version of a torrent and on result rows, weighing language, quality, seeders and size. They single out the best choice (★), the best quality for the size (⚖︎), the best quality (◆) and the most seeders (⚡︎). Tap a badge for the detail.
 - **Quick menu** (tap the C411 tab again): reload, C411 home, desktop mode, copy or share the link, settings.
 
 ### ⬇️ qBittorrent
 - Torrent list with live **speeds** and **free space**, filters (downloading, seeding, completed, paused, active, stalled, errors), **categories and tags**, search and many sort orders.
+- **Hidden tags**: torrents tagged `zen-farm` (ratio farming) are hidden by default, so the list stays fast with tens of thousands of them. A chip above the list shows them again, and the funnel menu lets you choose other tags to hide. *Resume all* and *Pause all* still act on every torrent, hidden or not.
 - **Multi-select** with bulk actions.
 - **Torrent details** with *Infos*, *Fichiers* (priorities, rename), *Trackers* and *Pairs* (peers) tabs.
 - **Actions**: pause / resume, force resume, recheck, reannounce, category, tags, move, rename, speed and share limits, sequential download, queue priority, copy magnet links, delete with or without files.

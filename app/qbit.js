@@ -348,16 +348,21 @@
     { k: 'last_activity', label: 'Dernière activité', desc: true },
     { k: 'category', label: 'Catégorie', desc: false }
   ];
+  // Torrents carrying one of these tags are hidden until the user turns the filter off (ratio farming adds tens of thousands).
+  const HIDE_DEFAULT = ['zen-farm'];
+  const hideStored = App.pref('qb.hide', null);
   const prefs = {
     filter: App.pref('qb.filter', 'all'),
     sort: App.pref('qb.sort', 'added_on'),
     desc: App.pref('qb.desc', true),
     cat: App.pref('qb.cat', null),
     tag: App.pref('qb.tag', null),
+    hide: Array.isArray(hideStored) ? hideStored.filter((g) => g && typeof g === 'string') : HIDE_DEFAULT.slice(),
+    hideOn: App.pref('qb.hideOn', true) !== false,
     q: ''
   };
   function savePrefs() {
-    ['filter', 'sort', 'desc', 'cat', 'tag'].forEach((k) => App.setPref('qb.' + k, prefs[k]));
+    ['filter', 'sort', 'desc', 'cat', 'tag', 'hide', 'hideOn'].forEach((k) => App.setPref('qb.' + k, prefs[k]));
   }
   function sortVal(t, k) {
     const v = t[k];
@@ -375,7 +380,37 @@
       return (x < y ? -1 : x > y ? 1 : 0) * dir || cmpName(a.name, b.name);
     };
   }
+  // Tags to hide right now: a tag picked in the tag filter is never hidden, so those torrents stay reachable.
+  let hideSet = new Set();
+  let hideSig = null;
+  const hideMemo = new Map();
+  function syncHide() {
+    const tags = prefs.hide.filter((g) => g !== prefs.tag);
+    const sig = tags.join('\n');
+    if (sig === hideSig) return;
+    hideSig = sig;
+    hideSet = new Set(tags);
+    hideMemo.clear();
+  }
+  // Memoised per distinct `tags` string: thousands of torrents share a handful of them.
+  function hasHiddenTag(t) {
+    const k = t.tags;
+    if (!k || !hideSet.size) return false;
+    let v = hideMemo.get(k);
+    if (v === undefined) {
+      if (hideMemo.size > 4000) hideMemo.clear();
+      v = Q.tagList(t).some((g) => hideSet.has(g));
+      hideMemo.set(k, v);
+    }
+    return v;
+  }
+  function countHideTagged(all) {
+    let n = 0;
+    for (const t of all) if (hasHiddenTag(t)) n++;
+    return n;
+  }
   function inBase(t) {
+    if (prefs.hideOn && hasHiddenTag(t)) return false;
     if (prefs.cat != null && (t.category || '') !== prefs.cat) return false;
     if (prefs.tag != null) {
       const tags = Q.tagList(t);
@@ -384,6 +419,7 @@
     return true;
   }
   function visibleList() {
+    syncHide();
     const f = FILTERS.find((x) => x.k === prefs.filter) || FILTERS[0];
     const terms = App.norm(prefs.q).split(/\s+/).filter(Boolean);
     return Object.values(store.torrents)
@@ -443,7 +479,13 @@
     const tagTxt = h('span');
     const catChip = h('button.chip.on.hidden', { type: 'button', onclick: () => Q.setFilter({ cat: null }) }, App.icon('folder'), catTxt, App.icon('x-mark', 'xs'));
     const tagChip = h('button.chip.on.hidden', { type: 'button', onclick: () => Q.setFilter({ tag: null }) }, App.icon('tag'), tagTxt, App.icon('x-mark', 'xs'));
-    App.append(chips, catChip, tagChip);
+    const hideTxt = h('span');
+    const hideN = h('span.n');
+    const hideOnIc = App.icon('eye-slash');
+    const hideOffIc = App.icon('eye');
+    const hideX = App.icon('x-mark', 'xs');
+    const hideChip = h('button.chip.hidden', { type: 'button', onclick: () => toggleHide() }, hideOnIc, hideOffIc, hideTxt, hideN, hideX);
+    App.append(chips, hideChip, catChip, tagChip);
     const chipEls = FILTERS.map((f) => {
       const n = h('span.n');
       const b = h('button.chip', {
@@ -464,7 +506,7 @@
     const scroll = h('div.scroll', stateBox, list);
     const fab = h('button.fab', { type: 'button', 'aria-label': 'Ajouter un torrent', onclick: () => App.run(() => Q.openAdd()) }, App.icon('plus'));
     App.append(page.el, searchRow, strip, chips, scroll, fab);
-    ui = { page, searchBtn, filterDot, normalActions, selActions, selClose, searchRow, searchInput, dlTxt, upTxt, freeEl, strip, catChip, catTxt, tagChip, tagTxt, chipEls, stateBox, list, scroll, fab, searchOpen: false, stateKey: null };
+    ui = { page, searchBtn, filterDot, normalActions, selActions, selClose, searchRow, searchInput, dlTxt, upTxt, freeEl, strip, hideChip, hideOnIc, hideOffIc, hideX, hideTxt, hideN, catChip, catTxt, tagChip, tagTxt, chipEls, stateBox, list, scroll, fab, searchOpen: false, stateKey: null };
     App.push('qbit', page);
   }
 
@@ -556,6 +598,9 @@
 
   // ---------- Menus ----------
   function mainMenu() {
+    syncHide();
+    const hid = prefs.hideOn ? countHideTagged(Object.values(store.torrents)) : 0;
+    const incl = hid ? 'Y compris ' + fmt.plural(hid, 'torrent masqué', 'torrents masqués') : null;
     App.menu({
       title: 'qBittorrent',
       items: [
@@ -563,6 +608,7 @@
         {
           icon: 'play',
           label: 'Tout reprendre',
+          sub: incl,
           onClick: async () => {
             await A.resume('all');
             App.toast('Tous les torrents ont repris', 'ok');
@@ -572,6 +618,7 @@
         {
           icon: 'pause',
           label: 'Tout mettre en pause',
+          sub: incl,
           onClick: async () => {
             await A.pause('all');
             App.toast('Tous les torrents sont en pause', 'ok');
@@ -619,10 +666,15 @@
       { value: null, label: 'Toutes les catégories', sub: fmt.plural(all.length, 'torrent'), icon: 'squares-2x2' },
       { value: '', label: 'Sans catégorie', sub: fmt.plural(counts[''] || 0, 'torrent'), icon: 'minus-circle' }
     ].concat(Q.categoryNames().map((c) => ({ value: c, label: c, sub: fmt.plural(counts[c] || 0, 'torrent'), icon: 'folder' })));
-    if (store.tags.length) opts.push('-', { value: '\u0001tags', label: 'Filtrer par étiquette…', icon: 'tag' });
+    if (store.tags.length || prefs.hide.length) {
+      opts.push('-');
+      if (store.tags.length) opts.push({ value: '\u0001tags', label: 'Filtrer par étiquette…', icon: 'tag' });
+      opts.push({ value: '\u0001hide', label: 'Masquer des étiquettes…', sub: prefs.hide.length ? prefs.hide.join(', ') + (prefs.hideOn ? '' : ' (affiché)') : 'Aucune', icon: 'eye-slash' });
+    }
     const v = await App.pick({ title: 'Catégorie', options: opts, value: prefs.cat });
     if (v === undefined) return;
     if (v === '\u0001tags') return askTagFilter();
+    if (v === '\u0001hide') return askHideTags();
     Q.setFilter({ cat: v });
   }
   async function askTagFilter() {
@@ -637,6 +689,44 @@
     ].concat(store.tags.slice().sort(cmpName).map((g) => ({ value: g, label: g, sub: fmt.plural(counts[g] || 0, 'torrent'), icon: 'tag' })));
     const v = await App.pick({ title: 'Étiquette', options: opts, value: prefs.tag });
     if (v !== undefined) Q.setFilter({ tag: v });
+  }
+  function toggleHide() {
+    prefs.hideOn = !prefs.hideOn;
+    savePrefs();
+    render();
+  }
+  function askHideTags() {
+    const counts = {};
+    Object.values(store.torrents).forEach((t) => Q.tagList(t).forEach((g) => {
+      counts[g] = (counts[g] || 0) + 1;
+    }));
+    const names = Array.from(new Set(store.tags.concat(prefs.hide))).sort(cmpName);
+    const picked = new Set(prefs.hide);
+    const rows = names.map((g) => App.checkRow(g + ' · ' + fmt.plural(counts[g] || 0, 'torrent'), picked.has(g), (v) => {
+      if (v) picked.add(g);
+      else picked.delete(g);
+    }));
+    let s = null;
+    s = App.sheet({
+      title: 'Masquer des étiquettes',
+      body: [
+        h('p.muted.wrap', 'Les torrents qui portent une de ces étiquettes ne sont pas listés. Une pastille au-dessus de la liste permet de les réafficher.'),
+        rows.length ? h('div', rows) : h('p.muted', 'Aucune étiquette pour l’instant.')
+      ],
+      actions: [
+        App.btn('Annuler', { onClick: () => s.close() }),
+        App.btn('Appliquer', {
+          cls: 'pri',
+          onClick: () => {
+            prefs.hide = names.filter((g) => picked.has(g));
+            prefs.hideOn = true;
+            savePrefs();
+            s.close();
+            render();
+          }
+        })
+      ]
+    });
   }
 
   // ---------- Rendering ----------
@@ -707,14 +797,16 @@
     if (kind === 'warn') return App.note('Connexion perdue : ' + msg, 'err');
     if (kind === 'none') return App.empty('inbox-arrow-down', 'Aucun torrent', 'Envoie un torrent depuis C411 ou ajoute-le avec le bouton +.');
     if (kind === 'nores') {
-      return App.empty('funnel', 'Aucun résultat', 'Aucun torrent ne correspond aux filtres.', [
+      const hid = key === 'nores:hidden';
+      return App.empty('funnel', 'Aucun résultat', hid ? 'Aucun torrent visible ne correspond aux filtres. Des torrents sont masqués par étiquette.' : 'Aucun torrent ne correspond aux filtres.', [
         App.btn('Réinitialiser les filtres', {
           onClick: () => {
             prefs.filter = 'all';
             if (ui.searchOpen) setSearch(false);
             Q.setFilter({ cat: null, tag: null });
           }
-        })
+        }),
+        hid ? App.btn('Afficher les masqués', { onClick: () => toggleHide() }) : null
       ]);
     }
     return null;
@@ -723,12 +815,15 @@
     if (!ui) return;
     const sv = store.server || {};
     const all = Object.values(store.torrents);
+    syncHide();
+    const hideTagged = hideSet.size ? countHideTagged(all) : 0;
+    const hiddenN = prefs.hideOn ? hideTagged : 0;
     if (selecting) {
       ui.page.setTitle(selected.size ? fmt.plural(selected.size, 'sélectionné') : 'Sélection');
       ui.page.setSub('Appui long ou toucher pour (dé)sélectionner');
     } else {
       ui.page.setTitle('qBittorrent');
-      ui.page.setSub(store.loaded ? fmt.plural(all.length, 'torrent') + (store.appVersion ? ' · ' + store.appVersion : '') : '');
+      ui.page.setSub(store.loaded ? fmt.plural(all.length - hiddenN, 'torrent') + (hiddenN ? ' · ' + fmt.plural(hiddenN, 'masqué') : '') + (store.appVersion ? ' · ' + store.appVersion : '') : '');
     }
 
     ui.strip.classList.toggle('hidden', !store.loaded);
@@ -748,6 +843,16 @@
     ui.tagChip.classList.toggle('hidden', prefs.tag == null);
     ui.tagTxt.textContent = prefs.tag === '' ? 'Sans étiquette' : prefs.tag || '';
     ui.filterDot.classList.toggle('hidden', prefs.cat == null && prefs.tag == null);
+    const hideNames = Array.from(hideSet);
+    const hideWhat = hideNames.length === 1 ? hideNames[0] : fmt.plural(hideNames.length, 'étiquette');
+    ui.hideChip.classList.toggle('hidden', !hideTagged);
+    ui.hideChip.classList.toggle('on', prefs.hideOn);
+    ui.hideChip.title = prefs.hideOn ? 'Afficher les torrents masqués' : 'Masquer ces torrents';
+    ui.hideOnIc.classList.toggle('hidden', !prefs.hideOn);
+    ui.hideX.classList.toggle('hidden', !prefs.hideOn);
+    ui.hideOffIc.classList.toggle('hidden', prefs.hideOn);
+    ui.hideTxt.textContent = prefs.hideOn ? hideWhat + (hideNames.length === 1 ? ' masqué' : ' masquées') : 'Masquer ' + hideWhat;
+    ui.hideN.textContent = hideTagged;
     const base = all.filter(inBase);
     FILTERS.forEach((f, i) => {
       const n = base.filter((t) => f.test(t)).length;
@@ -764,7 +869,7 @@
     else if (!store.loaded) key = 'loading';
     else if (store.error) key = 'warn:' + store.error.message;
     else if (!all.length) key = 'none';
-    else if (!list.length) key = 'nores';
+    else if (!list.length) key = hiddenN ? 'nores:hidden' : 'nores';
     if (key !== ui.stateKey) {
       ui.stateKey = key;
       App.fill(ui.stateBox, key ? stateContent(key) : null);
