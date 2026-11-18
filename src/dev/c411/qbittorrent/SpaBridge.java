@@ -2,6 +2,7 @@ package dev.c411.qbittorrent;
 
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.Intent;
 import android.webkit.JavascriptInterface;
 
 import org.json.JSONObject;
@@ -11,6 +12,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 /** window.Native for the Arr411 web app (Radarr, Sonarr, Lidarr, qBittorrent, settings). */
 final class SpaBridge {
+    private static final int MAX_WAITING = 64;
+
     private final MainActivity act;
     private final Engine engine;
     // Response bodies wait here until the page takes them (keeps big JSON out of evaluateJavascript).
@@ -29,10 +32,27 @@ final class SpaBridge {
     @JavascriptInterface
     public void http(String reqJson, String id) {
         engine.io().execute(() -> {
-            Engine.Resp r = Engine.request(reqJson);
-            if (r.error == null) texts.put(id, r.text == null ? "" : r.text);
-            act.spaJs("window.__nativeDone&&__nativeDone(" + JSONObject.quote(id) + "," + r.status + ","
-                    + (r.error == null ? "null" : JSONObject.quote(r.error)) + ")");
+            int status = 0;
+            String error = null;
+            try {
+                Engine.Resp r = Engine.request(reqJson);
+                status = r.status;
+                error = r.error;
+                if (error == null) {
+                    if (texts.size() >= MAX_WAITING) {
+                        // Nobody takes them (the page was reloaded under us): better to lose them than to fill the memory.
+                        Diag.warn("dropping " + texts.size() + " responses the page never took");
+                        texts.clear();
+                    }
+                    texts.put(id, r.text == null ? "" : r.text);
+                }
+            } catch (Throwable e) {
+                // The page waits for an answer whatever happens.
+                Diag.serious("app request failed", e, null);
+                error = e instanceof OutOfMemoryError ? "Mémoire insuffisante" : "Erreur interne";
+            }
+            act.spaJs("window.__nativeDone&&__nativeDone(" + JSONObject.quote(id) + "," + status + ","
+                    + (error == null ? "null" : JSONObject.quote(error)) + ")");
         });
     }
 
@@ -111,5 +131,32 @@ final class SpaBridge {
         } catch (Exception e) {
             return "";
         }
+    }
+
+    // ---------- Diagnostic (Settings) ----------
+
+    @JavascriptInterface
+    public String diagReport() {
+        return Diag.report();
+    }
+
+    @JavascriptInterface
+    public void diagShare() {
+        String report = Diag.report();
+        act.runOnUiThread(() -> {
+            try {
+                Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain")
+                        .putExtra(Intent.EXTRA_SUBJECT, "Arr411 : rapport de diagnostic")
+                        .putExtra(Intent.EXTRA_TEXT, report);
+                act.startActivity(Intent.createChooser(send, "Partager le diagnostic"));
+            } catch (Exception e) {
+                act.toast("Partage impossible : " + e.getMessage());
+            }
+        });
+    }
+
+    @JavascriptInterface
+    public void diagClear() {
+        Diag.clear();
     }
 }

@@ -14,6 +14,7 @@ import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
 import android.view.Menu;
@@ -21,12 +22,15 @@ import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.inputmethod.InputMethodManager;
+import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -51,6 +55,8 @@ public class MainActivity extends Activity implements NavBar.Listener {
     private static final String DESKTOP_JS = "(function(){var m=document.querySelector('meta[name=viewport]');"
             + "if(!m){m=document.createElement('meta');m.name='viewport';document.head.appendChild(m);}"
             + "m.content='width=1280';})()";
+    // Static: the activity is rebuilt after a renderer dies, and the count has to survive that.
+    private static final RestartDelay rendererDeaths = new RestartDelay();
 
     Engine engine;
     NavBar nav;
@@ -73,6 +79,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        Diag.lifecycle("activity created (" + (state == null ? "fresh" : "restored after the system ended it") + ")");
         engine = Engine.get(this);
         bundle = buildBundle();
         migrateDesktopPref();
@@ -179,8 +186,20 @@ public class MainActivity extends Activity implements NavBar.Listener {
             }
 
             @Override
+            public void onReceivedError(WebView view, WebResourceRequest req, WebResourceError error) {
+                if (req.isForMainFrame()) Diag.pageError(req.getUrl().toString(), error.getErrorCode(), String.valueOf(error.getDescription()));
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView view, WebResourceRequest req, WebResourceResponse res) {
+                if (req.isForMainFrame() && res.getStatusCode() >= 500) {
+                    Diag.pageError(req.getUrl().toString(), res.getStatusCode(), String.valueOf(res.getReasonPhrase()));
+                }
+            }
+
+            @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
-                return onRendererGone();
+                return onRendererGone("c411", detail);
             }
         });
         w.setWebChromeClient(new Chrome(true));
@@ -217,6 +236,12 @@ public class MainActivity extends Activity implements NavBar.Listener {
             if (!isPage) return;
             if (p >= 100) loading = false;
             updateProgress();
+        }
+
+        @Override
+        public boolean onConsoleMessage(ConsoleMessage message) {
+            Diag.console(isPage ? "c411" : "app", message);
+            return false;
         }
 
         @Override
@@ -571,6 +596,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
     protected void onResume() {
         super.onResume();
         resumed = true;
+        Diag.foreground(true);
         if (dead) return;
         c411.onResume();
         spa.onResume();
@@ -580,6 +606,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
     @Override
     protected void onPause() {
         resumed = false;
+        Diag.foreground(false);
         if (!dead) {
             c411.onPause();
             spa.onPause();
@@ -617,11 +644,19 @@ public class MainActivity extends Activity implements NavBar.Listener {
         cb.onReceiveValue(picked.isEmpty() ? null : picked.toArray(new Uri[0]));
     }
 
-    /** A WebView renderer died (usually low memory): drop both WebViews and rebuild the activity. */
-    boolean onRendererGone() {
+    /** A WebView renderer died (usually low memory): drop both WebViews and rebuild the activity, less eagerly if it keeps happening. */
+    boolean onRendererGone(String which, RenderProcessGoneDetail detail) {
+        Diag.rendererGone(which, detail);
         if (!dead) {
             destroyWebViews();
-            content.post(this::recreate);
+            long wait = rendererDeaths.afterDeath(SystemClock.elapsedRealtime());
+            if (wait > 0) {
+                Diag.warn("the display keeps dying: rebuilding it in " + wait / 1000 + " s");
+                toast("L'affichage a planté plusieurs fois : nouvel essai dans " + wait / 1000 + " s");
+            }
+            content.postDelayed(() -> {
+                if (!isFinishing() && !isDestroyed()) recreate();
+            }, wait);
         }
         return true;
     }
@@ -641,6 +676,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
 
     @Override
     protected void onDestroy() {
+        Diag.lifecycle("activity destroyed (finishing=" + isFinishing() + ", rebuilt after a failure=" + dead + ")");
         if (engine != null && engine.sink == sink) engine.sink = null;
         if (!dead) destroyWebViews();
         super.onDestroy();

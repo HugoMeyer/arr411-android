@@ -11,9 +11,12 @@ import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Base64;
+import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
 import android.webkit.RenderProcessGoneDetail;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -45,6 +48,12 @@ public final class Engine {
 
     private static Engine instance;
 
+    // A body bigger than this is refused with a message: running out of memory on a pool thread would take the whole process down.
+    // The engine's own requests are small now (it asks for what it needs only) and go through three copies on their way to the page.
+    private static final int ENGINE_BODY_LIMIT = 16 * 1024 * 1024;
+    private static final int BODY_LIMIT = 64 * 1024 * 1024;
+    private static final AtomicInteger ioThreads = new AtomicInteger();
+
     public static synchronized Engine get(Context c) {
         if (instance == null) instance = new Engine(c.getApplicationContext());
         return instance;
@@ -52,7 +61,13 @@ public final class Engine {
 
     private final Context ctx;
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final ExecutorService pool = Executors.newCachedThreadPool();
+    private final ExecutorService pool = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "arr411-io-" + ioThreads.incrementAndGet());
+        // A background task that fails is written down and dropped: it must not take the whole app down with it.
+        t.setUncaughtExceptionHandler((thread, error) -> Diag.uncaught(thread, error, false));
+        return t;
+    });
+    private final RestartDelay restarts = new RestartDelay();
     private final SharedPreferences prefs;
     private final Map<String, Callback> pending = new ConcurrentHashMap<>();
     private final List<Runnable> queue = new ArrayList<>();
@@ -83,16 +98,24 @@ public final class Engine {
 
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
-                // Renderer killed (low memory): rebuild the engine instead of crashing the app.
+                Diag.rendererGone("engine", detail);
+                // Renderer killed (low memory): rebuild the engine instead of crashing the app, less and less eagerly if it keeps dying.
                 if (view == wv) {
                     ready = false;
                     wv = null;
                     queue.clear();
                     failPending();
-                    main.post(() -> wv = createWebView());
+                    main.postDelayed(() -> wv = createWebView(), restarts.afterDeath(SystemClock.elapsedRealtime()));
                 }
                 view.destroy();
                 return true;
+            }
+        });
+        w.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(ConsoleMessage message) {
+                Diag.console("engine", message);
+                return false;
             }
         });
         w.addJavascriptInterface(new Bridge(), "QbtEngine");
@@ -197,37 +220,47 @@ public final class Engine {
 
         @JavascriptInterface
         public void notify(String title, String text) {
-            Intent open = new Intent(ctx, MainActivity.class).putExtra("tab", "qbit")
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            PendingIntent pi = PendingIntent.getActivity(ctx, 1, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-            Notification n = new Notification.Builder(ctx, "done")
-                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
-                    .setContentTitle(title)
-                    .setContentText(text)
-                    .setStyle(new Notification.BigTextStyle().bigText(text))
-                    .setContentIntent(pi)
-                    .setAutoCancel(true)
-                    .build();
             try {
+                Intent open = new Intent(ctx, MainActivity.class).putExtra("tab", "qbit")
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                PendingIntent pi = PendingIntent.getActivity(ctx, 1, open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+                Notification n = new Notification.Builder(ctx, "done")
+                        .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                        .setContentTitle(title)
+                        .setContentText(text)
+                        .setStyle(new Notification.BigTextStyle().bigText(text))
+                        .setContentIntent(pi)
+                        .setAutoCancel(true)
+                        .build();
                 ctx.getSystemService(NotificationManager.class).notify(notifId.incrementAndGet(), n);
-            } catch (SecurityException ignored) {
+            } catch (RuntimeException e) {
+                // Refused by the system (permission, too large…): a notification is never worth the app.
+                Diag.problem("notify", "notification failed", e);
             }
         }
 
         @JavascriptInterface
         public void http(String reqJson, String id) {
             pool.execute(() -> {
-                String result = doHttp(reqJson);
+                String js;
+                try {
+                    js = "__httpDone(" + JSONObject.quote(id) + "," + JSONObject.quote(doHttp(reqJson)) + ")";
+                } catch (Throwable e) {
+                    // Whatever happens, the page gets an answer: it waits for one.
+                    Diag.serious("engine request failed", e, null);
+                    String why = e instanceof OutOfMemoryError ? "Mémoire insuffisante" : "Erreur interne";
+                    js = "__httpDone(" + JSONObject.quote(id) + "," + JSONObject.quote("{\"error\":\"" + why + "\"}") + ")";
+                }
+                String script = js;
                 main.post(() -> {
-                    if (wv != null) wv.evaluateJavascript(
-                            "__httpDone(" + JSONObject.quote(id) + "," + JSONObject.quote(result) + ")", null);
+                    if (wv != null) wv.evaluateJavascript(script, null);
                 });
             });
         }
     }
 
     private static String doHttp(String reqJson) {
-        Resp r = request(reqJson);
+        Resp r = request(reqJson, ENGINE_BODY_LIMIT);
         try {
             JSONObject o = new JSONObject();
             if (r.error != null) o.put("error", r.error);
@@ -256,11 +289,20 @@ public final class Engine {
 
     /** One HTTP request described as JSON: {url, method, headers, body: {type: none|text|multipart}}. Blocking. */
     public static Resp request(String reqJson) {
+        return request(reqJson, BODY_LIMIT);
+    }
+
+    /** Same, refusing a response body bigger than {@code bodyLimit} bytes. */
+    static Resp request(String reqJson, int bodyLimit) {
         Resp res = new Resp();
         HttpURLConnection c = null;
+        String what = "request";
+        long started = SystemClock.elapsedRealtime();
         try {
             JSONObject req = new JSONObject(reqJson);
             URL url = new URL(req.getString("url"));
+            // For the log: where and what, never the query or a login.
+            what = req.optString("method", "GET") + " " + url.getHost() + (url.getPort() > 0 ? ":" + url.getPort() : "") + url.getPath();
             c = (HttpURLConnection) url.openConnection();
             c.setConnectTimeout(20000);
             c.setReadTimeout(60000);
@@ -317,19 +359,23 @@ public final class Engine {
             InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
             String text = "";
             if (in != null) {
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                byte[] b = new byte[16384];
-                for (int n; (n = in.read(b)) > 0; ) out.write(b, 0, n);
-                in.close();
-                text = out.toString("UTF-8");
+                try (InputStream stream = in) {
+                    text = BodyReader.readText(stream, c.getContentLengthLong(), bodyLimit);
+                }
             }
             res.status = status;
             res.text = text;
+        } catch (BodyReader.TooLargeException e) {
+            res.error = "Réponse trop volumineuse (plus de " + (e.limit >> 20) + " Mo) : abandon pour protéger la mémoire";
+        } catch (OutOfMemoryError e) {
+            res.error = "Mémoire insuffisante pour lire la réponse du serveur";
+            Diag.serious("out of memory while reading " + what, e, null);
         } catch (Exception e) {
             res.error = netError(e);
         } finally {
             if (c != null) c.disconnect();
         }
+        Diag.http(what, res.status, res.error, res.text.length(), SystemClock.elapsedRealtime() - started);
         return res;
     }
 }

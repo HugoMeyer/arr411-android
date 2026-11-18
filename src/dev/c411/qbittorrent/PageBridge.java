@@ -26,6 +26,7 @@ final class PageBridge {
     // Only these messages may come from the C411 page (no settings, no arbitrary servers).
     private static final Set<String> PAGE_TYPES = new HashSet<>(Arrays.asList(
             "getCategories", "pageStatus", "qbitIndex", "arm", "disarm", "upload", "arrMeta"));
+    private static final int FILE_LIMIT = 16 * 1024 * 1024;
 
     private final MainActivity act;
     private final Engine engine;
@@ -110,16 +111,22 @@ final class PageBridge {
                     ByteArrayOutputStream out = new ByteArrayOutputStream();
                     if (in != null) {
                         byte[] buf = new byte[16384];
-                        for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+                        for (int n; (n = in.read(buf)) > 0; ) {
+                            out.write(buf, 0, n);
+                            // A torrent file is a few hundred KB; the answer goes through base64 and JSON, which multiply it.
+                            if (out.size() > FILE_LIMIT) throw new Exception("Fichier trop volumineux");
+                        }
                         in.close();
                     }
                     r.put("status", st).put("base64", Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP));
                     break;
                 }
                 if (!r.has("status")) r.put("error", "Trop de redirections");
-            } catch (Exception e) {
+            } catch (Exception | OutOfMemoryError e) {
+                boolean memory = e instanceof OutOfMemoryError;
+                if (memory) Diag.serious("out of memory while fetching a file for the page", e, null);
                 try {
-                    r.put("error", String.valueOf(e.getMessage()));
+                    r.put("error", memory ? "Fichier trop volumineux" : String.valueOf(e.getMessage()));
                 } catch (Exception ignored) {
                 }
             } finally {

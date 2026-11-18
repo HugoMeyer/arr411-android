@@ -81,6 +81,7 @@
 - **Badge** with the number of active downloads on the qBittorrent tab.
 - **Dark, green interface** inspired by C411. The bottom bar hides while you type.
 - **Long-press** the Radarr, Sonarr, Lidarr or qBittorrent tab to jump to its settings.
+- **Diagnostic** (Settings → Diagnostic): a log of crashes, memory problems and the reasons why Android stopped the app, ready to copy or share. See [Diagnostics](#-diagnostics).
 
 ---
 
@@ -162,7 +163,8 @@ Native HTTP ──── the same APIs, plus a cover proxy with a disk cache
 - **No C411 credentials needed.** The app reuses C411's own download button with your logged-in session, then fetches the `.torrent` natively with the WebView's cookies.
 - **Native HTTP.** Requests to your servers are made in Java, so there's no CORS, `http://` LAN addresses work, and the `Origin` and `Referer` headers that qBittorrent's CSRF protection expects are set.
 - **Covers** from Radarr, Sonarr and Lidarr go through a local proxy that adds the API key, so the key never appears in image URLs. They're cached for a week (about 150 MB max).
-- **Two WebViews behind a native bottom bar**: the C411 page keeps its state while you switch tabs. If Android kills a WebView under memory pressure, the app rebuilds itself instead of crashing.
+- **Two WebViews behind a native bottom bar**: the C411 page keeps its state while you switch tabs. If Android kills a WebView under memory pressure, the app rebuilds itself instead of crashing, and waits a little longer each time if it keeps dying.
+- **Bounded memory.** A response from your servers is read in chunks and refused beyond a size limit (16 MB for the background checks, 64 MB otherwise), instead of being copied several times in memory. The background check only asks qBittorrent for the torrents that are downloading, so a library of tens of thousands of torrents no longer exhausts the phone's memory.
 
 ---
 
@@ -177,6 +179,25 @@ Native HTTP ──── the same APIs, plus a cover proxy with a disk cache
 - The C411 page **never sees them**: it can only send a short whitelist of messages to the app (categories, status, send).
 - Cleartext `http://` is allowed so LAN addresses work. Prefer HTTPS for anything exposed to the internet.
 - No analytics, no tracking. Besides C411 and your servers, the app only contacts the public **MusicBrainz** API (to match C411 music releases for Lidarr) and, as a fallback, the image servers your \*arr apps use for posters.
+- The diagnostic log stays in the app's private storage. Passwords, API keys and tokens are masked in it, but the addresses of your servers are not. Nothing leaves the phone unless you share it yourself.
+
+---
+
+## 🩺 Diagnostics
+
+If Arr411 closes by itself, open **Settings → Diagnostic**, tap **Copier le rapport** (or **Partager**) and send the text to whoever is helping you.
+
+The report holds:
+- the versions of the app, Android and WebView, and the device;
+- the memory the app uses and what is left, sampled every 15 minutes while it runs;
+- why Android ended the previous runs of Arr411 (low memory, crash, killed from the recent apps, …), on Android 11 and later;
+- the last crash, with its stack trace, written even if the process dies right after;
+- the last 200 log lines: slow or failed requests to your servers, web pages that stopped, memory warnings;
+- your settings with the secrets left out: only whether a login or an API key is set.
+
+The logs are `files/logs/arr411.log` and `crash.log` in the app's private storage, about 1.5 MB at most (they rotate). **Effacer** deletes them.
+
+When the previous run ended badly, the app also says so with a message at the next launch.
 
 ---
 
@@ -235,6 +256,7 @@ The script compiles the resources (aapt2), the Java code (javac, then d8), packs
 | `Cette adresse répond « … » et pas …` | The URL points to another app (for example Sonarr's URL in the Radarr card). |
 | Lidarr lists too many albums for a new artist | Use a narrower metadata profile. `None` keeps only the albums you add. |
 | No completion notification | Allow notifications for Arr411 in Android's settings. Checks run while the app is open or in the background, and Android may stop them after a while. |
+| The app closes by itself | Open **Settings → Diagnostic** and copy the report: it says why Android stopped the app and shows the last crash. See [Diagnostics](#-diagnostics). |
 | "App not installed" when updating | The new APK was signed with another key. Uninstall the old version first (its settings are lost). |
 
 ---
@@ -254,6 +276,13 @@ src/dev/c411/qbittorrent/
   SpaBridge.java        window.Native for the web app
   SpaClient.java        Serves the web app at https://arr411.local/app/, proxies and caches covers
   Shared.java           Turns shared links and .torrent files into app actions
+  App.java              Application class: starts the diagnostic log, forwards the system's memory warnings
+  Diag.java             Diagnostic log and report (crashes, memory, exit reasons), shown in Settings → Diagnostic
+  LogFile.java          Size-capped rotating log file
+  Redact.java           Masks passwords, keys and tokens before anything is logged
+  DiagText.java         Text helpers of the report (durations, exit reasons, stack traces)
+  BodyReader.java       Reads a server response in chunks, with a size limit
+  RestartDelay.java     Back-off before rebuilding a web view that keeps dying
 app/                    Web app (plain JavaScript, no build step)
   index.html, app.css   Shell and theme
   logo.png              Logo shown in Settings → About

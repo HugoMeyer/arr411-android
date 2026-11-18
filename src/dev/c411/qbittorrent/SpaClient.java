@@ -55,17 +55,23 @@ final class SpaClient extends WebViewClient {
 
     @Override
     public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
-        return act.onRendererGone();
+        return act.onRendererGone("app", detail);
     }
 
     @Override
     public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
-        Uri u = req.getUrl();
-        if (!HOST.equals(u.getHost())) return null;
-        String path = u.getPath() == null ? "" : u.getPath();
-        if (path.startsWith("/app/")) return asset(path.substring(5));
-        if (path.equals("/mc")) return cover(u);
-        return status(404, "Not Found");
+        try {
+            Uri u = req.getUrl();
+            if (!HOST.equals(u.getHost())) return null;
+            String path = u.getPath() == null ? "" : u.getPath();
+            if (path.startsWith("/app/")) return asset(path.substring(5));
+            if (path.equals("/mc")) return cover(u);
+            return status(404, "Not Found");
+        } catch (RuntimeException | OutOfMemoryError e) {
+            // Runs on the WebView's own threads, where a failure would end the app.
+            Diag.problem("intercept", "serving a page request failed", e);
+            return status(500, "Internal Error");
+        }
     }
 
     private WebResourceResponse asset(String rel) {
@@ -155,6 +161,9 @@ final class SpaClient extends WebViewClient {
                 }
             }
             return out.size() > 0 ? out.toByteArray() : null;
+        } catch (OutOfMemoryError e) {
+            Diag.problem("cover-memory", "not enough memory to load a cover", e);
+            return null;
         } catch (Exception e) {
             return null;
         } finally {

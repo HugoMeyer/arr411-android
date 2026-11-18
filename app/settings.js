@@ -298,6 +298,42 @@
     all.input.disabled = !en.input.checked;
     return card('notif', 'bell', 'Notifications', en, all);
   }
+
+  // The app writes down its incidents (crashes, memory, pages that stop) in a log kept on the phone; the report gathers it into one text to copy or send.
+  function diagCard() {
+    if (!window.Native || typeof window.Native.diagReport !== 'function') return null;
+    const out = h('pre.diag-out.sel.mono');
+    out.hidden = true;
+    const toggle = App.btn('Afficher', {
+      icon: 'document-text',
+      onClick: () => {
+        out.hidden = !out.hidden;
+        toggle.querySelector('span').textContent = out.hidden ? 'Afficher' : 'Masquer';
+        if (!out.hidden) out.textContent = String(App.nat('diagReport') || 'Rapport indisponible.');
+      }
+    });
+    const clear = () =>
+      App.confirm({
+        title: 'Effacer le journal ?',
+        message: 'Le journal et le dernier incident enregistré seront supprimés de ce téléphone. Envoie d’abord le rapport si tu veux le garder.',
+        ok: 'Effacer',
+        danger: true
+      }).then((ok) => {
+        if (!ok) return;
+        App.nat('diagClear');
+        if (!out.hidden) out.textContent = String(App.nat('diagReport') || '');
+        App.toast('Journal effacé', 'ok');
+      });
+    return card('diag', 'wrench-screwdriver', 'Diagnostic',
+      App.note('Quand l’app se ferme toute seule, son journal permet de comprendre pourquoi. Il reste sur ce téléphone ; les mots de passe, clés API et jetons y sont masqués, mais pas les adresses de tes serveurs.', '', 'information-circle'),
+      h('div.btn-row',
+        App.btn('Copier le rapport', { icon: 'clipboard-document', cls: 'pri', onClick: () => App.copy(App.nat('diagReport'), 'Rapport') }),
+        App.btn('Partager', { icon: 'share', onClick: () => App.nat('diagShare') })
+      ),
+      h('div.btn-row', toggle, App.btn('Effacer', { icon: 'trash', onClick: clear })),
+      out
+    );
+  }
   function about() {
     const v = App.nat('appVersion');
     return h('div.about', h('img.about-logo', { src: 'logo.png', alt: '' }), h('div.logo', 'Arr', h('span', '411')), h('div', 'C411 · qBittorrent · Radarr · Sonarr · Lidarr'), v ? h('div', 'Version ' + v) : null);
@@ -336,7 +372,7 @@
   S.init = function () {
     if (page) return;
     page = App.page({ title: 'Réglages', subtitle: 'Arr411', back: true, onBack: leave });
-    scroll = h('div.scroll', qbitCard(), arrCard('radarr'), arrCard('sonarr'), arrCard('lidarr'), c411Card(), notifCard(), about());
+    scroll = h('div.scroll', qbitCard(), arrCard('radarr'), arrCard('sonarr'), arrCard('lidarr'), c411Card(), notifCard(), diagCard(), about());
     page.el.appendChild(scroll);
     page.onShow = onShow;
     App.push(TAB, page);
