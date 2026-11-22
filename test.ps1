@@ -15,7 +15,7 @@ if (-not (Test-Path $javac)) {
 }
 
 # The classes under test must stay free of android.* so a plain JDK can run them.
-$pure = 'BodyReader', 'BridgeKey', 'ConsoleBudget', 'CookieJars', 'DiagText', 'FileNames', 'LogFile', 'LruThrottle', 'PageGate', 'Redact', 'RedirectPolicy', 'RestartDelay', 'UrlPolicy'
+$pure = 'BodyReader', 'BridgeKey', 'ConsoleBudget', 'CookieJars', 'DiagText', 'FileNames', 'HashedCopy', 'LogFile', 'LruThrottle', 'PageGate', 'Redact', 'RedirectPolicy', 'RestartDelay', 'UpdateFailure', 'UpdateFiles', 'UpdateFlow', 'UpdateHosts', 'UpdateInstallStatus', 'UpdateIntegrity', 'UpdateJson', 'UpdateRelease', 'UpdateState', 'UpdateThrottle', 'UpdateVersion', 'UrlPolicy'
 $sources = @()
 foreach ($name in $pure) {
   $file = "$root\src\dev\c411\qbittorrent\$name.java"
@@ -30,7 +30,7 @@ Remove-Item $out -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force "$out\classes", "$out\tmp" | Out-Null
 & $javac -encoding UTF-8 --release 11 -nowarn -d "$out\classes" $sources
 if ($LASTEXITCODE) { throw 'javac' }
-& $java "-Djava.io.tmpdir=$out\tmp" "-Darr411.src=$root\src\dev\c411\qbittorrent" -cp "$out\classes" dev.c411.qbittorrent.PureTests
+& $java "-Djava.io.tmpdir=$out\tmp" "-Darr411.src=$root\src\dev\c411\qbittorrent" "-Darr411.fixtures=$root\test\fixtures" -cp "$out\classes" dev.c411.qbittorrent.PureTests
 $code = $LASTEXITCODE
 
 $node = (Get-Command node -ErrorAction SilentlyContinue).Source

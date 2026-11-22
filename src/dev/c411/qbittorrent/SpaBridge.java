@@ -79,6 +79,7 @@ final class SpaBridge {
             JSONObject p = new JSONObject(patchJson);
             p.remove("tracked"); // owned by background.js
             engine.storageMerge(p.toString());
+            if (p.has("autoUpdate")) Updater.get(act).onModeChanged();
         } catch (Exception ignored) {
         }
     }
@@ -165,5 +166,26 @@ final class SpaBridge {
     @JavascriptInterface
     public void diagClear() {
         Diag.clear();
+    }
+
+    // ---------- Update of the app (Settings) ----------
+    // No argument comes from the page: what to download and where to install it is decided natively, from the release on GitHub.
+
+    /** The state of the update, as a JSON object (see the contract shared with the desktop app). */
+    @JavascriptInterface
+    public String updateInfo() {
+        return Updater.get(act).info();
+    }
+
+    /** Checks the latest release now (at most once a minute). The state is "checking" when this returns; the page reads it with updateInfo. */
+    @JavascriptInterface
+    public void updateCheck() {
+        Updater.get(act).check();
+    }
+
+    /** Downloads, verifies and installs the latest release. The state is no longer idle when this returns. */
+    @JavascriptInterface
+    public void updateInstall() {
+        Updater.get(act).install();
     }
 }

@@ -36,8 +36,9 @@ if ($LASTEXITCODE) { throw 'aapt2 link' }
 
 $src = @(Get-ChildItem "$root\src", "$b\gen" -Recurse -Filter *.java | ForEach-Object FullName)
 & javac -encoding UTF-8 --release 11 -nowarn -classpath $jar -d "$b\classes" $src; if ($LASTEXITCODE) { throw 'javac' }
-$classes = @(Get-ChildItem "$b\classes" -Recurse -Filter *.class | ForEach-Object FullName)
-& "$bt\d8.bat" --release --lib $jar --min-api 29 --output "$b\dex" $classes; if ($LASTEXITCODE) { throw 'd8' }
+# d8.bat runs through cmd.exe, which refuses a command line over 8191 characters: the classes reach d8 in a single jar.
+& jar cf "$b\classes.jar" -C "$b\classes" .; if ($LASTEXITCODE) { throw 'jar' }
+& "$bt\d8.bat" --release --lib $jar --min-api 29 --output "$b\dex" "$b\classes.jar"; if ($LASTEXITCODE) { throw 'd8' }
 
 Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
 Copy-Item "$b\base.apk" "$b\unaligned.apk"

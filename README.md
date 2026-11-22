@@ -84,6 +84,7 @@
 - **Long-press** the Radarr, Sonarr, Lidarr or qBittorrent tab to jump to its settings.
 - **Diagnostic** (Settings → Diagnostic): a log of crashes, memory problems and the reasons why Android stopped the app, ready to copy or share. See [Diagnostics](#-diagnostics).
 - **Backup** (Settings → Sauvegarde des réglages): export your settings to a JSON file and import them on another device or after a reinstall. The default export leaves out passwords and API keys; the full export includes them, encrypted with a passphrase (AES-256-GCM). An import is checked and previewed before anything changes.
+- **Updates** (Settings → Mises à jour): Arr411 looks for a new release on GitHub about every 6 hours, downloads it, checks its size and SHA-256, then installs it by itself when Android allows it, or tells you when it needs a tap. You can also choose to be notified only, or switch the check off. See [Updates](#-updates).
 
 ---
 
@@ -95,7 +96,7 @@ Arr411 is not on the Play Store. Install the APK yourself:
 2. Open it on your phone. When Android asks, allow your browser or file manager to install unknown apps.
 3. Launch **Arr411**, sign in to C411 in the **C411** tab, then fill in your servers in the settings.
 
-> Requires **Android 10** or later. To update, install the new APK over the old one: your settings are kept.
+> Requires **Android 10** or later. To update, let Arr411 update itself (see [Updates](#-updates)) or install the new APK over the old one: your settings are kept.
 
 ---
 
@@ -111,6 +112,7 @@ Open **Réglages** from any tab's menu, or long-press a tab in the bottom bar.
 | **Lidarr** *(optional)* | Same, plus the default metadata profile; the qBittorrent category is `lidarr` by default |
 | **C411** | List badges, desktop mode, startup tab (C411, Radarr, Sonarr, Lidarr, qBittorrent or the last one used) |
 | **Notifications** | Download completed; for all torrents, not only those sent from C411 |
+| **Mises à jour** | Mode (automatic, notify only, off), check now, install the latest version. See [Updates](#-updates) |
 
 - API keys are under **Settings → General → Security** in Radarr, Sonarr and Lidarr.
 - URLs can be LAN addresses (`http://192.168.1.10:8080`) or HTTPS domains. Your phone must be able to reach them: same Wi-Fi, a VPN, or a public domain.
@@ -176,6 +178,9 @@ Native HTTP ──── the same APIs, plus a cover proxy with a disk cache
 |---|---|
 | `INTERNET` | Reach C411 and your qBittorrent, Radarr, Sonarr and Lidarr servers |
 | `POST_NOTIFICATIONS` | Download-completed notifications (asked at first launch on Android 13+) |
+| `REQUEST_INSTALL_PACKAGES` | Install the update of Arr411 itself, once you have allowed it (*Install unknown apps*) |
+| `UPDATE_PACKAGES_WITHOUT_USER_ACTION` | Let that update install without one more confirmation when Android allows it (Android 12 and later) |
+| `RECEIVE_BOOT_COMPLETED` | Keep the periodic check for updates after the phone restarts |
 
 - Settings, passwords and API keys are stored in the app's **private storage**, excluded from Android backups, and only sent to your own servers.
 - The C411 page **never sees them**: it can only send a short whitelist of messages to the app (categories, status, send). Every message is size-capped and rate limited (30 per 10 seconds, 5 sends per 10 seconds, 4 downloads at a time).
@@ -184,7 +189,7 @@ Native HTTP ──── the same APIs, plus a cover proxy with a disk cache
 - **No open proxy.** The native `.torrent` download only follows `https://` links on `c411.org` and its subdomains, at every redirect, and refuses IP addresses and private networks: a page can't reach the servers of your LAN. Links from other apps and web pages are only opened as `https:`, `http:` or `magnet:`, and an external app launched by a page needs a tap. The C411 tab itself is `https` only.
 - **Credentials stay with their server.** The qBittorrent session cookie is kept per server, and a redirect to another host is refused instead of followed, so an API key is never forwarded elsewhere.
 - Cleartext `http://` is allowed so LAN addresses work. Prefer HTTPS for anything exposed to the internet.
-- No analytics, no tracking. Besides C411 and your servers, the app only contacts the public **MusicBrainz** API (to match C411 music releases for Lidarr) and, as a fallback, the image servers your \*arr apps use for posters.
+- No analytics, no tracking. Besides C411 and your servers, the app only contacts the public **MusicBrainz** API (to match C411 music releases for Lidarr), **GitHub** (to look for a new release of Arr411 and download it, see [Updates](#-updates)) and, as a fallback, the image servers your \*arr apps use for posters.
 - The diagnostic log stays in the app's private storage. Passwords, API keys, tokens and C411 passkeys are masked in it, but the addresses of your servers are not. Nothing leaves the phone unless you share it yourself.
 
 ---
@@ -204,6 +209,25 @@ The report holds:
 The logs are `files/logs/arr411.log` and `crash.log` in the app's private storage, about 1.5 MB at most (they rotate). **Effacer** deletes them.
 
 When the previous run ended badly, the app also says so with a message at the next launch.
+
+---
+
+## 🔄 Updates
+
+Arr411 can update itself from the [Releases](https://github.com/HugoMeyer/arr411-android/releases) page of this repository. **Settings → Mises à jour** shows the installed and the latest version, the release notes, a **Vérifier maintenant** button and the mode:
+
+| Mode | What the app does |
+|---|---|
+| **Automatique** *(default)* | Looks for a new release about every 6 hours and shortly after it starts, downloads and checks it, then installs it when you are not using the app and Android would not ask you to confirm. Otherwise it tells you with a notification. |
+| **Me prévenir seulement** | Looks for a new release and tells you. Nothing is downloaded until you tap **Installer la mise à jour**. |
+| **Désactivée** | No automatic check. **Vérifier maintenant** still works (at most once a minute). |
+
+- **What is checked before anything is installed.** The size and the SHA-256 of the APK must match what GitHub published for the release (the `digest` of the API, and `SHA256SUMS.txt` when the release has one), and the file must be Arr411, with a higher version than the installed one. The file is hashed again while it is handed to Android, and the installation is dropped if it differs. A release that publishes no checksum is never installed from the app: take it from the Releases page. Android itself still refuses an APK signed with another key.
+- **Where it connects.** Only to GitHub (`api.github.com`, `github.com` and its download servers), over HTTPS, one redirect at a time, with size and time limits. Nothing you typed or stored goes with the requests, only the name and the version of the app.
+- **Confirmation.** The first time, Android asks you to allow Arr411 to install apps (*Install unknown apps*). After that, Android 12 to 16 can install an update without another prompt, provided Arr411 installed the version you are running: the first update after you installed the APK by hand may still ask. Android 10 and 11 and Android 17 ask you to confirm every time. When a confirmation is needed, Arr411 opens it right away if you are in the app, or posts a notification to tap if you are not.
+- **When something fails** (no network, GitHub unreachable, a file that does not match), nothing is installed and the app keeps working. The reason is shown in Settings and written to the diagnostic log.
+
+Android closes the app while it installs the update. A notification (*Arr411 a été mis à jour en …*) tells you when the new version is in place.
 
 ---
 
@@ -257,7 +281,7 @@ The keystore password is only read from the `ARR411_KEYSTORE_PASS` environment v
 powershell -ExecutionPolicy Bypass -File test.ps1
 ```
 
-This compiles the classes that don't use `android.*` (URL and redirect policy, page-message gate, log helpers, redaction…) with the toolchain's JDK and runs `test\PureTests.java`. When Node.js is installed it also runs `test\shim`, the checks of the C411 page shim. It exits with a non-zero code if a check fails. No device or emulator is needed.
+This compiles the classes that don't use `android.*` (URL and redirect policy, page-message gate, log helpers, redaction, the decisions and checks of the self-update…) with the toolchain's JDK and runs `test\PureTests.java`. When Node.js is installed it also runs `test\shim`, the checks of the C411 page shim. It exits with a non-zero code if a check fails. No device or emulator is needed.
 
 ---
 
@@ -275,6 +299,7 @@ This compiles the classes that don't use `android.*` (URL and redirect policy, p
 | No completion notification | Allow notifications for Arr411 in Android's settings. Checks run while the app is open or in the background, and Android may stop them after a while. |
 | The app closes by itself | Open **Settings → Diagnostic** and copy the report: it says why Android stopped the app and shows the last crash. See [Diagnostics](#-diagnostics). |
 | "App not installed" when updating | The new APK was signed with another key. Uninstall the old version first (its settings are lost). |
+| The update does not install | **Settings → Mises à jour** says why. Allow Arr411 to install apps when Android asks (*Install unknown apps*), then tap **Installer la mise à jour** again. The APK is also on the [Releases](https://github.com/HugoMeyer/arr411-android/releases) page. |
 
 ---
 
@@ -283,11 +308,12 @@ This compiles the classes that don't use `android.*` (URL and redirect policy, p
 Paths are relative to the repository root.
 
 ```
-AndroidManifest.xml     Package, permissions, intent filters (C411 links, magnets, .torrent files, sharing)
+AndroidManifest.xml     Package, permissions, intent filters (C411 links, magnets, .torrent files, sharing), the update's job service and receivers
 build.ps1               Gradle-free build: aapt2 → javac → d8 → zipalign → apksigner (-NoCopy skips the copy to Downloads)
 test.ps1                Compiles the android-free classes, runs test/PureTests.java and test/shim (needs node)
 test/PureTests.java     Checks for the classes below that don't use android.*
 test/shim/              Checks for assets-extra/shim-page.js (the chrome.* shim of the C411 page)
+test/fixtures/          A real GitHub release answer (v2.3.1) that the update checks read
 src/dev/c411/qbittorrent/
   MainActivity.java     Two WebViews (C411 and the web app), bottom bar, intents, back navigation
   NavBar.java           Bottom bar with the active-downloads badge
@@ -311,6 +337,26 @@ src/dev/c411/qbittorrent/
   ConsoleBudget.java    Budget for the console lines of the web pages in the log
   LruThrottle.java      Bounded per-key throttle for repeated log lines
   FileNames.java        Sanitises the names of the .torrent files saved from the C411 page
+  Updater.java          Self-update: looks for a release on GitHub, downloads, verifies and installs it, and tells the web app (window.Native.update*)
+  UpdateJobService.java Periodic check for updates (JobScheduler, about every 6 hours, kept after a reboot)
+  InstallStatusReceiver.java Answer of Android's installer: done, needs a confirmation, failed
+  PackageReplacedReceiver.java After an update: tells you it is installed and sets the check up again
+  UpdateInstaller.java  Examines the downloaded APK and streams it into a PackageInstaller session, hashing it again on the way
+  UpdateNet.java        HTTP of the update: https only, GitHub's hosts only (at every redirect), size and time limits
+  UpdateNotifier.java   Notifications of the update: available, ready, confirm, allow, installed
+  UpdateStore.java      What the updater remembers: last answer and ETag, verified file, notifications already shown
+  UpdateFlow.java       The decisions: mode, what follows a check or a download, which job to keep, what to tell the user
+  UpdateState.java      The state of the update that the web app reads (JSON shared with the desktop app)
+  UpdateRelease.java    Reads the GitHub release: tag, notes, APK asset, size and SHA-256 digest
+  UpdateIntegrity.java  Size and SHA-256 checks: the digest of the API and SHA256SUMS.txt
+  HashedCopy.java       Copies a stream while hashing it, never beyond a size limit
+  UpdateHosts.java      The addresses and redirects the update may follow
+  UpdateInstallStatus.java What the status codes of the installer mean for the app
+  UpdateFailure.java    The French message of a failed update
+  UpdateFiles.java      Which downloaded APKs to keep or delete
+  UpdateThrottle.java   When to check (every 6 hours; by hand, once a minute) and how often to show the progress
+  UpdateVersion.java    Compares the versions of the releases (v2.3.1)
+  UpdateJson.java       Small JSON reader and writer, so the answer of GitHub can be checked without a device
 app/                    Web app (plain JavaScript, no build step)
   index.html, app.css   Shell and theme
   logo.png              Logo shown in Settings → About

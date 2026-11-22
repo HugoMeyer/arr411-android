@@ -70,6 +70,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
     private PageBridge page;
     private SpaBridge spaBridge;
     private Engine.EventSink sink;
+    private Updater.Sink updateSink;
     private FrameLayout content;
     private View hairline;
     private ProgressBar progress;
@@ -116,6 +117,8 @@ public class MainActivity extends Activity implements NavBar.Listener {
 
         sink = json -> c411Js("window.__qbtEvent && __qbtEvent(" + JSONObject.quote(json) + ")");
         engine.sink = sink;
+        updateSink = json -> spaJs("window.App&&App.onUpdate&&App.onUpdate(" + json + ")");
+        Updater.get(this).setSink(updateSink);
 
         if (Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -605,6 +608,12 @@ public class MainActivity extends Activity implements NavBar.Listener {
     /** running = the activity already existed (its C411 page did not load this intent's URL). */
     private void handleIntent(Intent in, boolean running) {
         if (in == null || dead) return;
+        if (Updater.ACTION_INSTALL_UPDATE.equals(in.getAction())) {
+            // A tap on a notification of the update: the settings show it, and the updater goes on only for the key that its notifications carry.
+            showTab("settings", true);
+            Updater.get(this).onTap(this, in.getStringExtra(Updater.EXTRA_KEY));
+            return;
+        }
         String t = in.getStringExtra("tab");
         if (isTab(t)) {
             showTab(t, true);
@@ -661,6 +670,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
     protected void onResume() {
         super.onResume();
         resumed = true;
+        Updater.get(this).onResume(this);
         c411ScreenChanged();
         Diag.foreground(true);
         if (dead) return;
@@ -672,6 +682,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
     @Override
     protected void onPause() {
         resumed = false;
+        Updater.get(this).onPause(this);
         c411ScreenChanged();
         Diag.foreground(false);
         if (!dead) {
@@ -746,6 +757,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
     protected void onDestroy() {
         Diag.lifecycle("activity destroyed (finishing=" + isFinishing() + ", rebuilt after a failure=" + dead + ")");
         if (engine != null && engine.sink == sink) engine.sink = null;
+        Updater.get(this).clearSink(updateSink);
         if (!dead) destroyWebViews();
         super.onDestroy();
     }

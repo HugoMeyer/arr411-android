@@ -8,6 +8,11 @@ public class App extends Application {
     public void onCreate() {
         super.onCreate();
         Diag.init(this);
+        try {
+            Updater.get(this).onAppStart();
+        } catch (Throwable e) {
+            Diag.warn("update: could not start [" + e.getClass().getSimpleName() + "]");
+        }
     }
 
     @Override
