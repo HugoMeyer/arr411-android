@@ -27,11 +27,7 @@
     return s.replace(/[[({].*$/, '').replace(/[-\s]+$/, '').trim() || String(n || '');
   };
 
-  function act(ic, label, fn, danger) {
-    const b = h('button.act' + (danger ? '.danger' : ''), { type: 'button' }, App.icon(ic), h('span', label));
-    b.addEventListener('click', () => App.run(fn));
-    return b;
-  }
+  const act = App.actBtn;
   function linkBtn(label, fn) {
     return h('button', { type: 'button', onclick: () => App.run(fn) }, label);
   }
@@ -514,7 +510,7 @@
       const grp = h('div.group.hidden');
       App.append(el, h('div.section-title', titleTxt, h('span.grow'), linkBtn('Ajouter', addPeers)), status, grp);
       let rid = 0;
-      let peers = {};
+      let peers = Object.create(null);
       let loaded = false;
       const prow = new Map();
       async function addPeers() {
@@ -586,11 +582,11 @@
         el: el,
         async refresh() {
           const d = await qb.json('/sync/torrentPeers', { query: { hash: hash, rid: rid } });
-          if (d.full_update || !loaded) peers = {};
+          if (d.full_update || !loaded) peers = Object.create(null);
           loaded = true;
           rid = d.rid || 0;
           const ps = d.peers || {};
-          for (const k in ps) peers[k] = Object.assign(peers[k] || {}, ps[k]);
+          for (const k in ps) if (!App.unsafeKey(k)) App.safeAssign(peers[k] || (peers[k] = {}), ps[k]);
           for (const k of d.peers_removed || []) delete peers[k];
           render();
         },
@@ -746,14 +742,9 @@
         }
         return;
       }
-      const counts = {};
-      const tagCounts = {};
-      Object.values(s.torrents).forEach((t) => {
-        counts[t.category || ''] = (counts[t.category || ''] || 0) + 1;
-        Q.tagList(t).forEach((g) => {
-          tagCounts[g] = (tagCounts[g] || 0) + 1;
-        });
-      });
+      const tally = Q.tally();
+      const counts = tally.cats;
+      const tagCounts = tally.tags;
       const cats = Q.categoryNames();
       const tags = s.tags.slice().sort(Q.cmpName);
       const nsig = JSON.stringify([cats.map((c) => [c, s.categories[c].savePath, counts[c]]), tags.map((g) => [g, tagCounts[g]]), App.config.defaultCategory]);

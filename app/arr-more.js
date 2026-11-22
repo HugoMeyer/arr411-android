@@ -14,9 +14,9 @@
     failedpending: ['Échec en attente', 'red'], failed: ['Échec', 'red'], ignored: ['Ignoré', ''], importblocked: ['Import bloqué', 'amber']
   };
   const HASH_RE = /^[0-9a-f]{40}$/i;
-  const trimSlash = (p) => String(p || '').replace(/[\\/]+$/, '');
-  const parentOf = (p) => trimSlash(p).replace(/[\\/][^\\/]*$/, '');
-  const coll = new Intl.Collator('fr', { sensitivity: 'base', numeric: true }).compare;
+  const trimSlash = App.trimSlash;
+  const parentOf = App.parentOf;
+  const coll = App.collator.compare;
 
   function parseSpan(s) {
     const m = /^(?:(\d+)\.)?(\d+):(\d+):(\d+)/.exec(String(s || ''));
@@ -1060,7 +1060,7 @@
           roots.map((r) => {
             const p = trimSlash(r.path);
             const isDef = p === def;
-            const count = items.filter((x) => trimSlash(x.rootFolderPath || parentOf(x.path)) === p).length;
+            const count = items.filter((x) => App.rootOf(x) === p).length;
             const unm = Array.isArray(r.unmappedFolders) ? r.unmappedFolders.length : null;
             return h('div.card',
               h('div.card-t', App.icon(r.accessible === false ? 'exclamation-triangle' : 'folder'), h('span.sel', { style: { flex: '1', minWidth: '0', wordBreak: 'break-all' } }, r.path), isDef ? App.badge('Par défaut', 'green', 'star') : null),

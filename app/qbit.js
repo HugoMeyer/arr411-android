@@ -33,50 +33,130 @@
   Q.stateKey = (t) => STATE[t.state] || 'queued';
   Q.stateLabel = (t) => LABEL[t.state] || String(t.state || '?');
   Q.isPaused = (t) => /^(paused|stopped)(DL|UP)$/.test(t.state || '');
-  Q.isDownloading = (t) => !!DOWNLOADING[t.state];
-  Q.isSeeding = (t) => !!SEEDING[t.state];
-  Q.tagList = (t) => String((t && t.tags) || '').split(',').map((x) => x.trim()).filter(Boolean);
-  const cmpName = (Q.cmpName = (a, b) => String(a || '').localeCompare(String(b || ''), 'fr', { sensitivity: 'base', numeric: true }));
+  const splitTags = (s) => String(s || '').split(',').map((x) => x.trim()).filter(Boolean);
+  Q.tagList = (t) => splitTags(t && t.tags);
+  const collate = App.collator.compare;
+  const cmpName = (Q.cmpName = (a, b) => collate(String(a || ''), String(b || '')));
 
   // ---------- Store (incremental /sync/maindata) ----------
-  const store = (Q.store = { rid: 0, torrents: {}, categories: {}, tags: [], server: {}, loaded: false, error: null, appVersion: null });
+  // Keyed stores have no prototype: a hash or category named "__proto__" (data written by whoever can add to qBittorrent) stays an inert key.
+  const store = (Q.store = { rid: 0, torrents: Object.create(null), categories: Object.create(null), tags: [], server: {}, loaded: false, error: null, appVersion: null });
   let waiters = [];
   let gen = 0;
+  // mem: torrents added/removed or category/tags changed. data: a listed field changed on a torrent of the current list. srv: server state changed.
+  const rev = { mem: 0, data: 0, srv: 0 };
+  const LISTED = new Set(['name', 'state', 'progress', 'dlspeed', 'upspeed', 'eta', 'size', 'ratio', 'added_on', 'num_seeds', 'completion_on', 'last_activity']);
+  let lastSig = null;
+  let dlN = 0;
   Q.categoryNames = () => Object.keys(store.categories).sort(cmpName);
   Q.get = (hash) => store.torrents[String(hash || '').toLowerCase()];
+  // Torrent counts per category and per tag, recomputed only when membership, categories or tags changed.
+  let tallyRev = -1;
+  let tallyVal = null;
+  Q.tally = () => {
+    if (tallyRev !== rev.mem) {
+      tallyRev = rev.mem;
+      const cats = Object.create(null);
+      const tags = Object.create(null);
+      const byTags = new Map();
+      let total = 0;
+      for (const k in store.torrents) {
+        const t = store.torrents[k];
+        total++;
+        cats[t.category || ''] = (cats[t.category || ''] || 0) + 1;
+        byTags.set(t.tags || '', (byTags.get(t.tags || '') || 0) + 1);
+      }
+      byTags.forEach((n, s) => splitTags(s).forEach((g) => {
+        tags[g] = (tags[g] || 0) + n;
+      }));
+      tallyVal = { total, cats, tags };
+    }
+    return tallyVal;
+  };
 
   function resetStore() {
     gen++;
-    Object.assign(store, { rid: 0, torrents: {}, categories: {}, tags: [], server: {}, loaded: false, error: null, appVersion: null });
+    Object.assign(store, { rid: 0, torrents: Object.create(null), categories: Object.create(null), tags: [], server: {}, loaded: false, error: null, appVersion: null });
+    rev.mem++;
+    rev.data++;
+    rev.srv++;
+    lastSig = null;
+    dlN = 0;
     if (Q._clearRows) Q._clearRows();
   }
   function merge(d) {
+    syncHide();
     if (d.full_update) {
-      store.torrents = {};
-      store.categories = {};
+      store.torrents = Object.create(null);
+      store.categories = Object.create(null);
       store.tags = [];
       store.server = {};
+      dlN = 0;
+      rev.mem++;
+      rev.data++;
+      rev.srv++;
     }
     store.rid = d.rid || 0;
     const ts = d.torrents || {};
-    for (const k in ts) store.torrents[k] = Object.assign(store.torrents[k] || { hash: k }, ts[k], { hash: k });
-    for (const k of d.torrents_removed || []) delete store.torrents[k];
+    for (const k in ts) {
+      if (App.unsafeKey(k)) continue;
+      const p = ts[k];
+      let t = store.torrents[k];
+      if (!t) {
+        t = store.torrents[k] = App.safeAssign({ hash: k }, p);
+        t.hash = k;
+        if (DOWNLOADING[t.state]) dlN++;
+        rev.mem++;
+        continue;
+      }
+      let moved = false;
+      let listed = false;
+      for (const f in p) {
+        if (App.unsafeKey(f)) continue;
+        const old = t[f];
+        if (old === p[f]) continue;
+        t[f] = p[f];
+        if (f === 'category' || f === 'tags') moved = true;
+        else if (LISTED.has(f)) {
+          listed = true;
+          if (f === 'state') dlN += (DOWNLOADING[p[f]] ? 1 : 0) - (DOWNLOADING[old] ? 1 : 0);
+        }
+      }
+      t.hash = k;
+      if (moved) rev.mem++;
+      else if (listed && inBase(t)) rev.data++;
+    }
+    for (const k of d.torrents_removed || []) {
+      const t = store.torrents[k];
+      if (!t) continue;
+      if (DOWNLOADING[t.state]) dlN--;
+      delete store.torrents[k];
+      rev.mem++;
+    }
     const cs = d.categories || {};
-    for (const k in cs) store.categories[k] = Object.assign(store.categories[k] || { name: k }, cs[k]);
+    for (const k in cs) {
+      if (!App.unsafeKey(k)) App.safeAssign(store.categories[k] || (store.categories[k] = { name: k }), cs[k]);
+    }
     for (const k of d.categories_removed || []) delete store.categories[k];
     if (d.tags) store.tags = Array.from(new Set(store.tags.concat(d.tags)));
     if (d.tags_removed) store.tags = store.tags.filter((t) => d.tags_removed.indexOf(t) < 0);
-    if (d.server_state) Object.assign(store.server, d.server_state);
+    if (d.server_state) {
+      App.safeAssign(store.server, d.server_state);
+      rev.srv++;
+    }
   }
   async function sync() {
     const g = gen;
+    let dirty = false;
     if (!qb.configured()) {
       store.error = App.mkErr('qBittorrent n’est pas configuré', 0, 'config');
     } else {
       try {
         const d = await qb.json('/sync/maindata', { query: { rid: store.rid } });
         if (g !== gen) return;
+        const before = rev.mem + rev.data + rev.srv;
         merge(d);
+        dirty = rev.mem + rev.data + rev.srv !== before;
         store.loaded = true;
         store.error = null;
         if (store.appVersion == null) {
@@ -97,7 +177,12 @@
     ws.forEach((w) => w());
     updateBadge();
     App.emit('qbit', store);
-    if (Q._render) Q._render();
+    // An empty delta leaves the list as it is: no render, hence none of its work.
+    const sig = [qb.configured(), store.loaded, store.error ? store.error.message : ''].join('|');
+    if (dirty || sig !== lastSig) {
+      lastSig = sig;
+      if (Q._render) Q._render();
+    }
   }
   const loop = App.loop(sync, () => {
     if (!App.state.fg || !qb.configured()) return null;
@@ -135,8 +220,7 @@
 
   let lastBadge = -1;
   function updateBadge() {
-    let n = 0;
-    if (store.loaded) for (const k in store.torrents) if (DOWNLOADING[store.torrents[k].state]) n++;
+    const n = store.loaded ? dlN : 0;
     if (n !== lastBadge) {
       lastBadge = n;
       App.nat('setBadge', n);
@@ -245,12 +329,12 @@
 
   Q.askTags = function (hashes) {
     const ts = hashes.map((x) => store.torrents[x]).filter(Boolean);
-    const has = {};
+    const has = Object.create(null);
     ts.forEach((t) => Q.tagList(t).forEach((g) => {
       has[g] = (has[g] || 0) + 1;
     }));
     const all = Array.from(new Set(store.tags.concat(Object.keys(has)))).sort(cmpName);
-    const state = {};
+    const state = Object.create(null);
     const rows = all.map((g) => {
       const r = App.checkRow(g, has[g] === ts.length, (v) => {
         state[g] = v;
@@ -418,13 +502,53 @@
     }
     return true;
   }
-  function visibleList() {
+  // The list is memoised in layers, each rebuilt only when its inputs changed: base (hidden tags, category, tag),
+  // then sorted + counted per filter, then search. A sync tick that changes nothing visible costs nothing.
+  const CHUNK = 300;
+  const V = { bKey: null, mem: -1, total: 0, hideTagged: 0, base: [], lKey: null, data: -1, counts: [], list: [], q: null, shown: [] };
+  const normMemo = new WeakMap();
+  function normName(t) {
+    let e = normMemo.get(t);
+    if (!e || e.name !== t.name) normMemo.set(t, (e = { name: t.name, n: App.norm(t.name) }));
+    return e.n;
+  }
+  function getView() {
     syncHide();
-    const f = FILTERS.find((x) => x.k === prefs.filter) || FILTERS[0];
-    const terms = App.norm(prefs.q).split(/\s+/).filter(Boolean);
-    return Object.values(store.torrents)
-      .filter((t) => inBase(t) && f.test(t) && (!terms.length || terms.every((w) => App.norm(t.name).indexOf(w) >= 0)))
-      .sort(comparator());
+    const bKey = JSON.stringify([hideSig, prefs.hideOn, prefs.cat, prefs.tag]);
+    if (V.bKey !== bKey || V.mem !== rev.mem) {
+      const all = Object.values(store.torrents);
+      V.bKey = bKey;
+      V.mem = rev.mem;
+      V.total = all.length;
+      V.hideTagged = hideSet.size ? countHideTagged(all) : 0;
+      V.base = all.filter(inBase);
+      V.lKey = null;
+    }
+    const lKey = prefs.filter + '|' + prefs.sort + '|' + prefs.desc;
+    if (V.lKey !== lKey || V.data !== rev.data) {
+      const f = FILTERS.find((x) => x.k === prefs.filter) || FILTERS[0];
+      const counts = FILTERS.map(() => 0);
+      // Sorted in place: the previous order is nearly right after a tick, which the sort exploits.
+      V.base.sort(comparator());
+      for (const t of V.base) for (let i = 0; i < FILTERS.length; i++) if (FILTERS[i].test(t)) counts[i]++;
+      V.counts = counts;
+      V.list = f.k === 'all' ? V.base : V.base.filter(f.test);
+      V.lKey = lKey;
+      V.data = rev.data;
+      V.q = null;
+    }
+    if (V.q !== prefs.q) {
+      V.q = prefs.q;
+      const terms = App.norm(prefs.q).split(/\s+/).filter(Boolean);
+      V.shown = terms.length ? V.list.filter((t) => {
+        const n = normName(t);
+        return terms.every((w) => n.indexOf(w) >= 0);
+      }) : V.list;
+    }
+    return V;
+  }
+  function visibleList() {
+    return getView().shown;
   }
   Q.setFilter = function (o) {
     if ('cat' in o) prefs.cat = o.cat;
@@ -443,6 +567,7 @@
   Q._clearRows = () => {
     rows.forEach((r) => r.el.remove());
     rows.clear();
+    if (ui) ui.limit = CHUNK;
   };
 
   function buildMain() {
@@ -503,11 +628,29 @@
 
     const stateBox = h('div');
     const list = h('div.list');
-    const scroll = h('div.scroll', stateBox, list);
+    const more = h('div.more.hidden');
+    const scroll = h('div.scroll', stateBox, list, more);
     const fab = h('button.fab', { type: 'button', 'aria-label': 'Ajouter un torrent', onclick: () => App.run(() => Q.openAdd()) }, App.icon('plus'));
     App.append(page.el, searchRow, strip, chips, scroll, fab);
-    ui = { page, searchBtn, filterDot, normalActions, selActions, selClose, searchRow, searchInput, dlTxt, upTxt, freeEl, strip, hideChip, hideOnIc, hideOffIc, hideX, hideTxt, hideN, catChip, catTxt, tagChip, tagTxt, chipEls, stateBox, list, scroll, fab, searchOpen: false, stateKey: null };
+    ui = { page, searchBtn, filterDot, normalActions, selActions, selClose, searchRow, searchInput, dlTxt, upTxt, freeEl, strip, hideChip, hideOnIc, hideOffIc, hideX, hideTxt, hideN, catChip, catTxt, tagChip, tagTxt, chipEls, stateBox, list, more, scroll, fab, searchOpen: false, stateKey: null, limit: CHUNK, lsig: null, moreN: 0, io: null };
+    // Scrolling near the end appends the next chunk; the button below stays as a fallback.
+    if (typeof IntersectionObserver === 'function') {
+      ui.io = new IntersectionObserver((es) => {
+        if (es.some((e) => e.isIntersecting)) showMore();
+      }, { root: scroll, rootMargin: '0px 0px 600px 0px' });
+      ui.io.observe(more);
+    }
     App.push('qbit', page);
+  }
+
+  function showMore() {
+    ui.limit += CHUNK;
+    render();
+    if (ui.io) {
+      // Re-observing reports the marker again, so a tall window keeps loading until it is out of reach.
+      ui.io.unobserve(ui.more);
+      ui.io.observe(ui.more);
+    }
   }
 
   function setSearch(open) {
@@ -598,8 +741,7 @@
 
   // ---------- Menus ----------
   function mainMenu() {
-    syncHide();
-    const hid = prefs.hideOn ? countHideTagged(Object.values(store.torrents)) : 0;
+    const hid = prefs.hideOn ? getView().hideTagged : 0;
     const incl = hid ? 'Y compris ' + fmt.plural(hid, 'torrent masqué', 'torrents masqués') : null;
     App.menu({
       title: 'qBittorrent',
@@ -657,13 +799,10 @@
     });
   }
   async function askFilter() {
-    const all = Object.values(store.torrents);
-    const counts = {};
-    all.forEach((t) => {
-      counts[t.category || ''] = (counts[t.category || ''] || 0) + 1;
-    });
+    const tally = Q.tally();
+    const counts = tally.cats;
     const opts = [
-      { value: null, label: 'Toutes les catégories', sub: fmt.plural(all.length, 'torrent'), icon: 'squares-2x2' },
+      { value: null, label: 'Toutes les catégories', sub: fmt.plural(tally.total, 'torrent'), icon: 'squares-2x2' },
       { value: '', label: 'Sans catégorie', sub: fmt.plural(counts[''] || 0, 'torrent'), icon: 'minus-circle' }
     ].concat(Q.categoryNames().map((c) => ({ value: c, label: c, sub: fmt.plural(counts[c] || 0, 'torrent'), icon: 'folder' })));
     if (store.tags.length || prefs.hide.length) {
@@ -678,11 +817,7 @@
     Q.setFilter({ cat: v });
   }
   async function askTagFilter() {
-    const all = Object.values(store.torrents);
-    const counts = {};
-    all.forEach((t) => Q.tagList(t).forEach((g) => {
-      counts[g] = (counts[g] || 0) + 1;
-    }));
+    const counts = Q.tally().tags;
     const opts = [
       { value: null, label: 'Toutes les étiquettes', icon: 'squares-2x2' },
       { value: '', label: 'Sans étiquette', icon: 'minus-circle' }
@@ -696,10 +831,7 @@
     render();
   }
   function askHideTags() {
-    const counts = {};
-    Object.values(store.torrents).forEach((t) => Q.tagList(t).forEach((g) => {
-      counts[g] = (counts[g] || 0) + 1;
-    }));
+    const counts = Q.tally().tags;
     const names = Array.from(new Set(store.tags.concat(prefs.hide))).sort(cmpName);
     const picked = new Set(prefs.hide);
     const rows = names.map((g) => App.checkRow(g + ' · ' + fmt.plural(counts[g] || 0, 'torrent'), picked.has(g), (v) => {
@@ -814,16 +946,15 @@
   function render() {
     if (!ui) return;
     const sv = store.server || {};
-    const all = Object.values(store.torrents);
-    syncHide();
-    const hideTagged = hideSet.size ? countHideTagged(all) : 0;
+    const view = getView();
+    const hideTagged = view.hideTagged;
     const hiddenN = prefs.hideOn ? hideTagged : 0;
     if (selecting) {
       ui.page.setTitle(selected.size ? fmt.plural(selected.size, 'sélectionné') : 'Sélection');
       ui.page.setSub('Appui long ou toucher pour (dé)sélectionner');
     } else {
       ui.page.setTitle('qBittorrent');
-      ui.page.setSub(store.loaded ? fmt.plural(all.length - hiddenN, 'torrent') + (hiddenN ? ' · ' + fmt.plural(hiddenN, 'masqué') : '') + (store.appVersion ? ' · ' + store.appVersion : '') : '');
+      ui.page.setSub(store.loaded ? fmt.plural(view.total - hiddenN, 'torrent') + (hiddenN ? ' · ' + fmt.plural(hiddenN, 'masqué') : '') + (store.appVersion ? ' · ' + store.appVersion : '') : '');
     }
 
     ui.strip.classList.toggle('hidden', !store.loaded);
@@ -853,51 +984,63 @@
     ui.hideOffIc.classList.toggle('hidden', prefs.hideOn);
     ui.hideTxt.textContent = prefs.hideOn ? hideWhat + (hideNames.length === 1 ? ' masqué' : ' masquées') : 'Masquer ' + hideWhat;
     ui.hideN.textContent = hideTagged;
-    const base = all.filter(inBase);
     FILTERS.forEach((f, i) => {
-      const n = base.filter((t) => f.test(t)).length;
+      const n = view.counts[i];
       const el = ui.chipEls[i];
       el.n.textContent = n;
       el.classList.toggle('on', prefs.filter === f.k);
       el.classList.toggle('hidden', !!f.hideEmpty && !n && prefs.filter !== f.k);
     });
 
-    const list = store.loaded ? visibleList() : [];
+    const shown = store.loaded ? view.shown : [];
     let key = '';
     if (!qb.configured()) key = 'cfg';
     else if (!store.loaded && store.error) key = 'err:' + store.error.message;
     else if (!store.loaded) key = 'loading';
     else if (store.error) key = 'warn:' + store.error.message;
-    else if (!all.length) key = 'none';
-    else if (!list.length) key = hiddenN ? 'nores:hidden' : 'nores';
+    else if (!view.total) key = 'none';
+    else if (!shown.length) key = hiddenN ? 'nores:hidden' : 'nores';
     if (key !== ui.stateKey) {
       ui.stateKey = key;
       App.fill(ui.stateBox, key ? stateContent(key) : null);
     }
 
-    const seen = new Set();
-    let reorder = list.length !== ui.list.children.length;
-    list.forEach((t, i) => {
+    // Only the first `limit` rows exist in the DOM; a new filter, sort or search starts over from the first chunk.
+    const lsig = view.bKey + '|' + view.lKey + '|' + prefs.q;
+    if (lsig !== ui.lsig) {
+      ui.lsig = lsig;
+      ui.limit = CHUNK;
+    }
+    const want = shown.length > ui.limit ? shown.slice(0, ui.limit) : shown;
+    const kids = ui.list.children;
+    let from = -1;
+    want.forEach((t, i) => {
       let r = rows.get(t.hash);
       if (!r) {
         r = makeRow(t.hash);
         rows.set(t.hash, r);
-        reorder = true;
       }
       updateRow(r, t);
-      if (!reorder && ui.list.children[i] !== r.el) reorder = true;
-      seen.add(t.hash);
+      if (from < 0 && kids[i] !== r.el) from = i;
     });
-    rows.forEach((r, hash) => {
-      if (seen.has(hash)) return;
-      r.el.remove();
-      if (!store.torrents[hash]) rows.delete(hash);
-    });
-    if (reorder) {
+    if (from < 0 && kids.length > want.length) from = want.length;
+    if (from >= 0) {
+      // Rows before the first difference stay untouched, so a tick or "show more" only appends.
+      while (kids.length > from) ui.list.lastChild.remove();
       const frag = document.createDocumentFragment();
-      list.forEach((t) => frag.appendChild(rows.get(t.hash).el));
+      for (let i = from; i < want.length; i++) frag.appendChild(rows.get(want[i].hash).el);
       ui.list.appendChild(frag);
     }
+    if (rows.size > want.length) {
+      const keep = new Set(want.map((t) => t.hash));
+      rows.forEach((r, hash) => {
+        if (!keep.has(hash)) rows.delete(hash);
+      });
+    }
+    const rest = shown.length - want.length;
+    ui.more.classList.toggle('hidden', rest <= 0);
+    if (rest > 0 && rest !== ui.moreN) App.fill(ui.more, App.btn('Afficher plus (' + fmt.plural(rest, 'restant') + ')', { cls: 'sm', icon: 'chevron-down', onClick: showMore }));
+    ui.moreN = rest;
     if (selecting) {
       for (const x of Array.from(selected)) if (!store.torrents[x]) selected.delete(x);
     }

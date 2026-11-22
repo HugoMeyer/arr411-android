@@ -100,7 +100,7 @@
     const d = fmt.toDate(v);
     return d ? d.getTime() : 0;
   };
-  const coll = new Intl.Collator('fr', { sensitivity: 'base', numeric: true });
+  const coll = App.collator;
   const titleKey = (x) => x.sortTitle || App.norm(x.title);
   const cleanName = (n) => (App.qbit && App.qbit.cleanName ? App.qbit.cleanName(n) : String(n || ''));
   const sizeOf = (x) => (x && ((x.statistics && x.statistics.sizeOnDisk) || x.sizeOnDisk || (x.movieFile && x.movieFile.size))) || 0;
@@ -128,11 +128,7 @@
     ic.style.color = COLOR_VAR[color || ''] || color;
     return ic;
   }
-  function act(ic, label, fn, danger) {
-    const b = h('button.act' + (danger ? '.danger' : ''), { type: 'button' }, App.icon(ic), h('span', label));
-    b.addEventListener('click', () => App.run(fn));
-    return b;
-  }
+  const act = App.actBtn;
   function remoteSized(u, type, size) {
     if (!u) return null;
     if (/image\.tmdb\.org\/t\/p\/original\//.test(u)) {
@@ -167,8 +163,8 @@
   App.arrUtil = { pad, ts, sizeOf, ratingOf, langName, qualityName, baseName, joinPath, colorIcon, act, fileKv, cleanName, COLOR_VAR, EVENTS, STATUS_LABEL, SERIES_TYPES, MIN_AVAIL };
 
   const relTs = (x) => ts(x.digitalRelease) || ts(x.physicalRelease) || ts(x.inCinemas) || 0;
-  const trimSlash = (p) => String(p || '').replace(/[\\/]+$/, '');
-  const rootOf = (x) => trimSlash(x.rootFolderPath || trimSlash(x.path).replace(/[\\/][^\\/]*$/, ''));
+  const trimSlash = App.trimSlash;
+  const rootOf = App.rootOf;
   const isFr = (a) => !!(a && a.language && /fren|fran/i.test(a.language.name || ''));
   const epCode = (s, e) => 'S' + pad(s) + (e != null ? 'E' + pad(e) : '');
 
@@ -1207,7 +1203,7 @@
       const api = M.api();
       const profSel = App.select(meta.profiles.map((p) => ({ value: p.id, label: p.name })), x.qualityProfileId);
       const curRoot = rootOf(x);
-      const roots = meta.roots.map((r) => ({ value: trimSlash(r.path), label: trimSlash(r.path) + (r.freeSpace ? ' · ' + fmt.bytes(r.freeSpace) + ' libres' : '') }));
+      const roots = App.rootOptions(meta.roots);
       if (curRoot && !roots.some((r) => r.value === curRoot)) roots.unshift({ value: curRoot, label: curRoot + ' (actuel)' });
       const rootSel = App.select(roots, curRoot);
       const moveHint = App.note('Les fichiers existants seront déplacés vers le nouveau dossier racine.', 'warn', 'folder');
@@ -1442,11 +1438,11 @@
         if (anime && animeRoot) root = animeRoot;
         else if (!anime && /anim/i.test(root)) root = roots.find((p) => !/anim/i.test(p)) || root;
       }
-      if (o.path) root = trimSlash(o.root || trimSlash(o.path).replace(/[\\/][^\\/]*$/, ''));
+      if (o.path) root = trimSlash(o.root || App.parentOf(o.path));
       else if (roots.indexOf(root) < 0) root = roots[0];
       let prof = Number(cfg[svc + 'Profile']);
       if (!meta.profiles.some((p) => p.id === prof)) prof = meta.profiles[0].id;
-      const rootSel = App.select(meta.roots.map((x) => ({ value: trimSlash(x.path), label: trimSlash(x.path) + (x.freeSpace ? ' · ' + fmt.bytes(x.freeSpace) + ' libres' : '') })), root);
+      const rootSel = App.select(App.rootOptions(meta.roots), root);
       const profSel = App.select(meta.profiles.map((p) => ({ value: p.id, label: p.name })), prof);
       const tags = M.tagPicker(meta, []);
       const fields = [];

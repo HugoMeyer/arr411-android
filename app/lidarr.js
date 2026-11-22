@@ -5,9 +5,9 @@
   const h = App.h;
   const fmt = App.fmt;
 
-  const trimSlash = (p) => String(p || '').replace(/[\\/]+$/, '');
-  const rootOf = (x) => trimSlash(x.rootFolderPath || trimSlash(x.path).replace(/[\\/][^\\/]*$/, ''));
-  const coll = new Intl.Collator('fr', { sensitivity: 'base', numeric: true });
+  const trimSlash = App.trimSlash;
+  const rootOf = App.rootOf;
+  const coll = App.collator;
   const isAlbum = (x) => !!(x && x.foreignAlbumId);
   const cap = (s) => (s ? String(s).charAt(0).toUpperCase() + String(s).slice(1) : '');
   const yearOf = (d) => {
@@ -637,7 +637,7 @@
       metaHint.classList.add('hidden');
       if (metaSel) metaSel.addEventListener('change', () => metaHint.classList.toggle('hidden', Number(metaSel.value) === x.metadataProfileId));
       const curRoot = rootOf(x);
-      const roots = meta.roots.map((r) => ({ value: trimSlash(r.path), label: trimSlash(r.path) + (r.freeSpace ? ' · ' + fmt.bytes(r.freeSpace) + ' libres' : '') }));
+      const roots = App.rootOptions(meta.roots);
       if (curRoot && !roots.some((r) => r.value === curRoot)) roots.unshift({ value: curRoot, label: curRoot + ' (actuel)' });
       const rootSel = App.select(roots, curRoot);
       const moveHint = App.note('Les fichiers existants seront déplacés vers le nouveau dossier racine.', 'warn', 'folder');

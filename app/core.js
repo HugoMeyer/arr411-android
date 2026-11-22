@@ -412,6 +412,11 @@
     }
     return b;
   };
+  App.actBtn = function (ic, label, fn, danger) {
+    const b = h('button.act' + (danger ? '.danger' : ''), { type: 'button' }, icon(ic), h('span', label));
+    b.addEventListener('click', () => App.run(fn));
+    return b;
+  };
   App.input = function (o) {
     return h('input.input', Object.assign({ type: 'text', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' }, o || {}));
   };
@@ -586,6 +591,22 @@
   });
   App.norm = function (s) {
     return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  };
+  // One shared collator: building one per comparison (localeCompare with options) dominates the cost of sorting thousands of names.
+  App.collator = new Intl.Collator('fr', { sensitivity: 'base', numeric: true });
+  App.trimSlash = (p) => String(p || '').replace(/[\\/]+$/, '');
+  App.parentOf = (p) => App.trimSlash(p).replace(/[\\/][^\\/]*$/, '');
+  App.rootOf = (x) => App.trimSlash(x.rootFolderPath || App.parentOf(x.path));
+  App.rootOptions = (roots) => roots.map((r) => ({ value: App.trimSlash(r.path), label: App.trimSlash(r.path) + (r.freeSpace ? ' · ' + fmt.bytes(r.freeSpace) + ' libres' : '') }));
+  // Keys that would reach Object.prototype (or swap an object's prototype) when copied from remote data into a plain object.
+  App.unsafeKey = (k) => k === '__proto__' || k === 'constructor' || k === 'prototype';
+  // Object.assign when no unsafe key is an own property of src (the usual case, and a native fast path), else a filtered copy.
+  App.safeAssign = function (dst, src) {
+    if (!src) return dst;
+    const has = Object.prototype.hasOwnProperty;
+    if (!has.call(src, '__proto__') && !has.call(src, 'constructor') && !has.call(src, 'prototype')) return Object.assign(dst, src);
+    for (const k in src) if (!App.unsafeKey(k)) dst[k] = src[k];
+    return dst;
   };
   App.debounce = function (fn, ms) {
     let t = null;
@@ -826,10 +847,19 @@
       .trim();
     App.openC411('https://c411.org/torrents?q=' + encodeURIComponent(terms) + '&sortBy=relevance');
   };
+  // Only web and magnet links leave the app: the URL often comes from a server's data (links, wiki, tracker pages).
   App.openExternal = function (url) {
     if (!url) return;
-    if (window.Native && typeof window.Native.openUrl === 'function') nat('openUrl', url);
-    else window.open(url, '_blank');
+    let u = null;
+    try {
+      u = new URL(String(url).trim());
+    } catch (e) {}
+    if (!u || (u.protocol !== 'https:' && u.protocol !== 'http:' && u.protocol !== 'magnet:')) {
+      App.toast('Lien non pris en charge (http, https ou magnet uniquement)', 'err');
+      return;
+    }
+    if (window.Native && typeof window.Native.openUrl === 'function') nat('openUrl', u.href);
+    else window.open(u.href, '_blank', 'noopener,noreferrer');
   };
   App.copy = function (text, label) {
     text = String(text == null ? '' : text);
