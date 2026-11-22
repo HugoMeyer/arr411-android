@@ -339,6 +339,330 @@
     return h('div.about', h('img.about-logo', { src: 'logo.png', alt: '' }), h('div.logo', 'Arr', h('span', '411')), h('div', 'C411 · qBittorrent · Radarr · Sonarr · Lidarr'), v ? h('div', 'Version ' + v) : null);
   }
 
+  // ---------- Score des torrents ----------
+  // Same ids and weights as the shared engine (arr411-chrome background.js), which scores the torrents of c411.org.
+  const SCORE_PRESETS = [
+    { value: 'equilibre', label: 'Équilibré (par défaut)', hint: 'Privilégie l’équilibre : langue et qualité d’abord, puis seeders et taille.' },
+    { value: 'qualite', label: 'Qualité d’image', hint: 'Privilégie la qualité d’image : un Remux ou une 2160p passent devant les encodages compacts.' },
+    { value: 'vf', label: 'VF / MULTI d’abord', hint: 'Privilégie la langue : MULTI.VFF et VOF loin devant VF2, VFQ et VOSTFR.' },
+    { value: 'leger', label: 'Petite taille', hint: 'Privilégie la petite taille : la meilleure qualité pour le moins de Go.' },
+    { value: 'ratio', label: 'Ratio (seeders)', hint: 'Privilégie les seeders, pour faire du ratio.' },
+    { value: 'perso', label: 'Personnalisé', hint: 'Privilégie ce que tu choisis : règle le poids de chaque critère.' }
+  ];
+  const SCORE_WEIGHTS = [
+    { key: 'lang', label: 'Langue (VF/MULTI)', def: 30 },
+    { key: 'quality', label: 'Qualité', def: 30 },
+    { key: 'health', label: 'Santé (seeders)', def: 20 },
+    { key: 'size', label: 'Taille', def: 20 }
+  ];
+  // An integer from 0 to 100, or the fallback when v is not a usable number.
+  function toWeight(v, fallback) {
+    const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() ? Number(v) : NaN;
+    return isFinite(n) ? Math.min(100, Math.max(0, Math.round(n))) : fallback;
+  }
+  const curPreset = () => (SCORE_PRESETS.some((p) => p.value === cfg().scorePreset) ? cfg().scorePreset : 'equilibre');
+  // The saved weights; the default ones when none is saved or all are 0 (the engine scores that as « équilibre »).
+  function savedWeights() {
+    const src = cfg().scoreWeights && typeof cfg().scoreWeights === 'object' ? cfg().scoreWeights : {};
+    const out = {};
+    for (const k of SCORE_WEIGHTS) out[k.key] = toWeight(src[k.key], k.def);
+    if (SCORE_WEIGHTS.every((k) => out[k.key] === 0)) for (const k of SCORE_WEIGHTS) out[k.key] = k.def;
+    return out;
+  }
+  function scoreCard() {
+    const sel = App.select(SCORE_PRESETS, curPreset());
+    const hint = h('div.hint');
+    const inputs = {};
+    const grid = h('div.score-grid');
+    for (const k of SCORE_WEIGHTS) {
+      inputs[k.key] = App.input({ type: 'number', inputmode: 'numeric', min: '0', max: '100', step: '1', 'aria-label': k.label });
+      grid.appendChild(App.field(k.label, inputs[k.key]));
+    }
+    const zero = App.note('Au moins un poids doit être supérieur à 0 : réglage non enregistré.', 'warn');
+    zero.classList.add('hidden');
+    const weights = h('div', grid, zero, h('div.hint.score-hint', 'Poids de 0 à 100 : seul leur rapport compte, et un poids à 0 ignore le critère.'));
+
+    // An empty or invalid field keeps the saved weight; all zeros is refused (the last valid weights stay saved).
+    function commit(final) {
+      if (curPreset() !== 'perso') return;
+      const saved = savedWeights();
+      const w = {};
+      for (const k of SCORE_WEIGHTS) w[k.key] = toWeight(inputs[k.key].value, saved[k.key]);
+      const ok = SCORE_WEIGHTS.some((k) => w[k.key] > 0);
+      zero.classList.toggle('hidden', ok);
+      if (final) for (const k of SCORE_WEIGHTS) inputs[k.key].value = String(w[k.key]);
+      if (!ok || SCORE_WEIGHTS.every((k) => w[k.key] === saved[k.key])) return;
+      App.saveCfg({ scorePreset: 'perso', scoreWeights: w });
+    }
+    function sync() {
+      const p = curPreset();
+      const w = savedWeights();
+      sel.value = p;
+      for (const k of SCORE_WEIGHTS) inputs[k.key].value = String(w[k.key]);
+      zero.classList.add('hidden');
+      hint.textContent = SCORE_PRESETS.find((x) => x.value === p).hint;
+      weights.classList.toggle('hidden', p !== 'perso');
+    }
+    sel.addEventListener('change', () => {
+      const v = sel.value;
+      if (!SCORE_PRESETS.some((p) => p.value === v)) return;
+      App.saveCfg(v === 'perso' ? { scorePreset: v, scoreWeights: savedWeights() } : { scorePreset: v });
+      sync();
+    });
+    const typing = App.debounce(() => commit(false), 600);
+    for (const k of SCORE_WEIGHTS) {
+      inputs[k.key].addEventListener('input', typing);
+      inputs[k.key].addEventListener('change', () => commit(true));
+    }
+    refreshers.push(sync);
+    sync();
+    return card('score', 'chart-bar', 'Score des torrents',
+      h('div.field', h('label', 'Profil de score'), sel, hint),
+      weights,
+      h('div.hint', 'S’applique aux badges de score sur c411.org (recharge la page si elle est ouverte).')
+    );
+  }
+
+  // ---------- Mises à jour ----------
+  // The host answers updateInfo() with a JSON string and pushes every change through App.onUpdate (see the update contract).
+  const hasUpdInfo = () => !!(window.Native && typeof window.Native.updateInfo === 'function');
+  const hasUpdCheck = () => !!(window.Native && typeof window.Native.updateCheck === 'function');
+  const hasUpdInstall = () => !!(window.Native && typeof window.Native.updateInstall === 'function');
+  const UPD_STATUS = ['idle', 'checking', 'uptodate', 'downloading', 'ready', 'installing', 'error'];
+  const UPD_BUSY = ['checking', 'downloading', 'installing'];
+  const UPD_MODES = [
+    { value: 'auto', label: 'Automatique (recommandé)', hint: 'Recherche, télécharge et installe les mises à jour toute seule, quand tu n’utilises pas l’app.' },
+    { value: 'notify', label: 'Me prévenir seulement', hint: 'Recherche régulièrement et te prévient ; l’installation reste manuelle.' },
+    { value: 'off', label: 'Désactivée', hint: 'Aucune recherche automatique ; tu peux toujours vérifier à la main.' }
+  ];
+  const updMode = (v) => (UPD_MODES.some((m) => m.value === v) ? v : null);
+  let upd = null;
+  let updUi = null;
+  const curMode = () => updMode(cfg().autoUpdate) || (upd && upd.mode) || 'auto';
+
+  // The state as an object or JSON text, reduced to the known fields; null when unusable.
+  function parseUpdate(raw) {
+    let o = raw;
+    if (typeof o === 'string') {
+      try {
+        o = JSON.parse(o);
+      } catch (e) {
+        return null;
+      }
+    }
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+    const str = (v) => (typeof v === 'string' ? v : '');
+    const num = (v) => (typeof v === 'number' && isFinite(v) ? v : null);
+    const progress = num(o.progress);
+    const checkedAt = num(o.checkedAt);
+    return {
+      supported: o.supported !== false,
+      current: str(o.current),
+      latest: str(o.latest),
+      available: o.available === true,
+      status: UPD_STATUS.indexOf(o.status) >= 0 ? o.status : 'idle',
+      progress: progress == null ? null : Math.max(0, Math.min(1, progress)),
+      notes: str(o.notes),
+      url: str(o.url),
+      checkedAt: checkedAt > 0 ? checkedAt : null,
+      canInstall: o.canInstall === true,
+      error: str(o.error),
+      mode: updMode(o.mode)
+    };
+  }
+  // Release notes are GitHub markdown; they are shown as plain text (textContent, never HTML).
+  function plainNotes(md) {
+    return String(md || '')
+      .replace(/\r\n?/g, '\n')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/^[ \t]*(```|~~~).*$/gm, '')
+      .replace(/^[ \t]*#{1,6}[ \t]+/gm, '')
+      .replace(/^[ \t]*([-*_])([ \t]*\1){2,}[ \t]*$/gm, '')
+      .replace(/^[ \t]*>[ \t]?/gm, '')
+      .replace(/<\/?[a-z][^>]*>/gi, '')
+      .replace(/!?\[([^\]\n]*)\]\([^)\s]*\)/g, '$1')
+      .replace(/^([ \t]*)[-*+][ \t]+/gm, '$1• ')
+      .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+      .replace(/(^|[\s(])\*(?=\S)([^*\n]*?\S)\*(?=[\s).,;:!?]|$)/gm, '$1$2')
+      .replace(/`([^`\n]*)`/g, '$1')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+  // The status line: { kind, ic, text, bar } or null when there is nothing to say.
+  function updStatus(u) {
+    switch (u.status) {
+      case 'checking':
+        return { kind: 'wait', ic: 'arrow-path', text: 'Vérification en cours…' };
+      case 'downloading':
+        return { kind: 'wait', ic: 'arrow-path', text: u.progress == null ? 'Téléchargement de la mise à jour…' : 'Téléchargement de la mise à jour : ' + Math.round(u.progress * 100) + ' %', bar: u.progress };
+      case 'ready':
+        return { kind: 'ok', ic: 'check-circle', text: 'Mise à jour prête à installer.' };
+      case 'installing':
+        return { kind: 'wait', ic: 'arrow-path', text: 'Installation en cours…' };
+      case 'error':
+        return { kind: 'err', ic: 'exclamation-triangle', text: 'Erreur : ' + (u.error || 'cause inconnue') };
+    }
+    if (u.available) return { kind: 'ok', ic: 'arrow-down-tray', text: 'Une nouvelle version est disponible.' };
+    if (u.status === 'uptodate' || (u.latest && u.checkedAt)) return { kind: 'ok', ic: 'check-circle', text: 'Arr411 est à jour.' };
+    return null;
+  }
+  const updNew = () => hasUpdInfo() && !!(upd && upd.supported && upd.available);
+  // body.upd-new lights the dot on the « ⋯ » button of the main pages (app.css).
+  function syncDot() {
+    if (document.body) document.body.classList.toggle('upd-new', updNew());
+  }
+  function setText(el, t) {
+    if (el.textContent !== t) el.textContent = t;
+  }
+
+  function renderUpdate() {
+    const ui = updUi;
+    if (!ui) return;
+    const u = upd;
+    const busy = !!u && UPD_BUSY.indexOf(u.status) >= 0;
+    const st = u ? updStatus(u) : null;
+    ui.root.classList.toggle('hidden', !!u && !u.supported);
+    ui.badge.classList.toggle('hidden', !(u && u.available));
+    setText(ui.cur, (u && u.current) || ui.appVer || '—');
+    setText(ui.last, (u && u.latest) || '—');
+    setText(ui.when, u && u.checkedAt ? 'Vérifié ' + App.fmt.rel(Math.min(u.checkedAt, Date.now())) : 'Pas encore vérifié');
+    ui.when.classList.toggle('hidden', !u);
+
+    const cls = 'note upd-st' + (st ? ' ' + st.kind : ' hidden');
+    if (ui.noteCls !== cls) ui.note.className = ui.noteCls = cls;
+    if (st) {
+      if (ui.noteIcName !== st.ic) {
+        const ic = App.icon(st.ic);
+        ui.note.replaceChild(ic, ui.noteIc);
+        ui.noteIc = ic;
+        ui.noteIcName = st.ic;
+      }
+      setText(ui.msg, st.text);
+      ui.bar.classList.toggle('hidden', st.bar == null);
+      if (st.bar != null) ui.bar.set(st.bar);
+    }
+
+    const notes = u ? u.notes : '';
+    if (notes !== ui.notesRaw) {
+      ui.notesRaw = notes;
+      const t = plainNotes(notes);
+      ui.notes.textContent = t;
+      ui.foldBox.classList.toggle('hidden', !t);
+    }
+    setText(ui.foldLabel, u && u.latest ? 'Nouveautés de la version ' + u.latest : 'Nouveautés');
+
+    const canInstall = !!u && u.available && u.canInstall && hasUpdInstall();
+    ui.install.classList.toggle('hidden', !canInstall);
+    ui.install.disabled = busy;
+    setText(ui.install.querySelector('span'), u && u.latest ? 'Installer la version ' + u.latest : 'Installer la mise à jour');
+    ui.page.classList.toggle('hidden', !(u && u.available && !canInstall && u.url));
+    ui.check.disabled = busy;
+  }
+  function setUpdate(raw) {
+    upd = parseUpdate(raw);
+    syncDot();
+    renderUpdate();
+    updLoop.schedule();
+  }
+  // While the card is on screen and the host is working, the state is read every second (a push may have been missed).
+  const updLoop = App.loop(
+    () => setUpdate(App.nat('updateInfo')),
+    () => (updUi && upd && UPD_BUSY.indexOf(upd.status) >= 0 && App.visible(TAB) ? 1000 : null)
+  );
+
+  function updateCard() {
+    if (!hasUpdInfo()) return null;
+    const ui = {
+      appVer: App.nat('appVersion'),
+      badge: App.badge('Nouveau', 'green'),
+      cur: h('dd.sel'),
+      last: h('dd.sel'),
+      when: h('div.hint.upd-when'),
+      msg: h('div'),
+      bar: App.bar(0),
+      noteIc: App.icon('arrow-path'),
+      noteIcName: 'arrow-path',
+      noteCls: null,
+      notesRaw: null,
+      foldLabel: h('span'),
+      notes: h('div.diag-out.upd-notes.sel.hidden')
+    };
+    ui.note = h('div.note.upd-st.hidden', ui.noteIc, h('div.upd-body', ui.msg, ui.bar));
+    ui.fold = h('button.upd-fold', { type: 'button', 'aria-expanded': 'false' }, App.icon('chevron-right'), ui.foldLabel);
+    ui.fold.addEventListener('click', () => {
+      const open = ui.notes.classList.contains('hidden');
+      ui.notes.classList.toggle('hidden', !open);
+      ui.fold.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    ui.foldBox = h('div.hidden', ui.fold, ui.notes);
+
+    // Ask the host, show what it answers at once (the push that follows keeps it current), and keep the button busy a moment.
+    const ask = (method) => () => {
+      App.nat(method);
+      setUpdate(App.nat('updateInfo'));
+      return App.sleep(900);
+    };
+    ui.install = App.btn('Installer la mise à jour', { icon: 'arrow-down-tray', cls: 'pri', onClick: ask('updateInstall') });
+    ui.page = App.btn('Ouvrir la page de téléchargement', { icon: 'arrow-top-right-on-square', onClick: () => upd && upd.url && App.openExternal(upd.url) });
+    ui.check = App.btn('Vérifier maintenant', { icon: 'arrow-path', onClick: ask('updateCheck') });
+    if (!hasUpdCheck()) ui.check.classList.add('hidden');
+
+    const select = App.select(UPD_MODES, curMode());
+    const modeHint = h('div.hint');
+    const showMode = () => {
+      const m = UPD_MODES.find((x) => x.value === curMode());
+      select.value = m.value;
+      modeHint.textContent = m.hint;
+    };
+    select.addEventListener('change', () => {
+      if (!updMode(select.value)) return;
+      App.saveCfg({ autoUpdate: select.value });
+      showMode();
+    });
+
+    ui.root = card('update', 'arrow-down-tray', 'Mises à jour',
+      h('dl.kv', h('dt', 'Version actuelle'), ui.cur, h('dt', 'Dernière version'), ui.last),
+      ui.when,
+      ui.note,
+      ui.foldBox,
+      h('div.btn-row', ui.install, ui.page, ui.check),
+      h('div.set-sep'),
+      h('div.field', h('label', 'Mise à jour automatique'), select, modeHint)
+    );
+    ui.root.firstChild.appendChild(ui.badge);
+    updUi = ui;
+    refreshers.push(() => {
+      showMode();
+      setUpdate(App.nat('updateInfo'));
+    });
+    showMode();
+    renderUpdate();
+    return ui.root;
+  }
+
+  // Available from startup, before the settings are ever opened.
+  App.onUpdate = setUpdate;
+  // An entry above « Réglages » in the « ⋯ » menus while an update is waiting.
+  App.menuItems = function (items) {
+    try {
+      const i = updNew() ? items.findIndex((it) => it && it !== '-' && it.icon === 'cog-6-tooth') : -1;
+      if (i < 0) return items;
+      const entry = { icon: 'arrow-down-tray', label: 'Mise à jour disponible', sub: upd.latest ? 'Version ' + upd.latest : null, right: App.badge('Nouveau', 'green'), onClick: () => App.openSettings('update') };
+      return items.slice(0, i).concat([entry], items.slice(i));
+    } catch (e) {
+      return items;
+    }
+  };
+  // The app may have been in the background while the host pushed (and the page could not hear it).
+  let wasForeground = App.state.fg;
+  App.on('visibility', () => {
+    if (App.state.fg && !wasForeground && hasUpdInfo()) setUpdate(App.nat('updateInfo'));
+    wasForeground = App.state.fg;
+  });
+  if (hasUpdInfo()) setUpdate(App.nat('updateInfo'));
+  // Exposed for the unit tests (test\spa).
+  Object.assign(S, { updateCard: updateCard, scoreCard: scoreCard, parseUpdate: parseUpdate, plainNotes: plainNotes });
+
   // ---------- Page ----------
   function reloadCfg() {
     if (!window.Native) return;
@@ -372,7 +696,7 @@
   S.init = function () {
     if (page) return;
     page = App.page({ title: 'Réglages', subtitle: 'Arr411', back: true, onBack: leave });
-    scroll = h('div.scroll', qbitCard(), arrCard('radarr'), arrCard('sonarr'), arrCard('lidarr'), c411Card(), notifCard(), diagCard(), about());
+    scroll = h('div.scroll', qbitCard(), arrCard('radarr'), arrCard('sonarr'), arrCard('lidarr'), c411Card(), scoreCard(), notifCard(), updateCard(), diagCard(), about());
     page.el.appendChild(scroll);
     page.onShow = onShow;
     App.push(TAB, page);

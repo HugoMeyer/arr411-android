@@ -962,7 +962,11 @@
       ui.dlTxt.textContent = fmt.speed(sv.dl_info_speed);
       ui.upTxt.textContent = fmt.speed(sv.up_info_speed);
       const lines = [];
-      if (sv.free_space_on_disk != null) lines.push(h('div', 'Libre ' + fmt.bytes(sv.free_space_on_disk)));
+      const free = sv.free_space_on_disk;
+      if (free != null) {
+        const low = free >= 0 && free < 10 * 1024 ** 3;
+        lines.push(h('div' + (low ? '.low' : ''), { title: low ? 'Espace disque faible' : null }, 'Libre ' + fmt.bytes(free)));
+      }
       if (sv.use_alt_speed_limits) lines.push(h('div.alt', 'Vitesse alternative'));
       else if (sv.connection_status === 'firewalled') lines.push(h('div.alt', 'Derrière un pare-feu'));
       else if (sv.connection_status === 'disconnected') lines.push(h('div', { style: { color: 'var(--red)' } }, 'Déconnecté'));

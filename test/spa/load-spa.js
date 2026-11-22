@@ -18,13 +18,14 @@ function memoryStorage() {
   };
 }
 
-// Returns the stub `window` once `files` (in order) ran. `opts.Native` is the bridge object, if any.
+// Returns the stub `window` once `files` (in order) ran. `opts.Native` is the bridge object, if any;
+// `opts.document` replaces the DOM-less stub (see fake-dom.js).
 function loadSpa(files, opts) {
   const win = { Native: opts && opts.Native, opened: [], toasts: [] };
   win.open = (...args) => {
     win.opened.push(args);
   };
-  const doc = { getElementById: () => null };
+  const doc = (opts && opts.document) || { getElementById: () => null };
   const storage = memoryStorage();
   for (const f of files) {
     const src = fs.readFileSync(path.join(APP_DIR, f), 'utf8') + '\n//# sourceURL=' + f;

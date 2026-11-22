@@ -695,7 +695,8 @@
   App.menu = function (o) {
     const m = h('div.menu');
     const s = App.sheet({ title: o.title, body: m, onClose: o.onClose });
-    const items = (o.items || []).filter(Boolean);
+    // App.menuItems (settings.js) may add an entry, e.g. the update notice above « Réglages ».
+    const items = (App.menuItems ? App.menuItems(o.items || []) : o.items || []).filter(Boolean);
     const hasIcons = items.some((it) => it !== '-' && it.icon);
     for (const it of items) {
       if (it === '-') {
