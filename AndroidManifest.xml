@@ -70,7 +70,34 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/x-bittorrent" />
             </intent-filter>
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- The app shortcuts and a long press on the tile come through here. It has no task of its own, so that starting it doesn't clear the task of the running app. -->
+        <activity
+            android:name=".ShortcutActivity"
+            android:exported="true"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES" />
+            </intent-filter>
+        </activity>
+
+        <!-- Quick Settings tile. The permission is the lock on the service: only the system can bind to it. -->
+        <service
+            android:name=".SpeedTile"
+            android:exported="true"
+            android:label="@string/tile_speed"
+            android:icon="@drawable/tile_speed"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data android:name="android.service.quicksettings.TOGGLEABLE_TILE" android:value="true" />
+        </service>
 
         <!-- Self-update. None of these is exported: only the system (the job scheduler, the installer, the package manager) reaches them. -->
         <service

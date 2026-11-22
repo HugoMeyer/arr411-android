@@ -2343,10 +2343,12 @@ public class PureTests {
         if (replaced != null) eq(Arrays.asList("android.intent.action.MY_PACKAGE_REPLACED"), manifestNames(replaced, "action"), "wiring: it only hears about its own replacement");
         check(manifestElement(manifest, "receiver", ".InstallStatusReceiver") != null, "wiring: the receiver of the installer status is declared");
 
-        // Only the launcher activity is open to other apps; a component that is not exported can only be reached by the system.
+        // Apart from the tile, which only the system may bind (speedWiring), no service, receiver or provider is open to other apps: a component that is not exported can only be reached by the system.
         for (String tag : new String[]{"service", "receiver", "provider"}) {
             for (String name : manifestNames(manifest.getDocumentElement(), tag)) {
-                eq("false", manifestElement(manifest, tag, name).getAttribute("android:exported"), "wiring: " + name + " is not exported");
+                if (!name.equals(".SpeedTile")) {
+                    eq("false", manifestElement(manifest, tag, name).getAttribute("android:exported"), "wiring: " + name + " is not exported");
+                }
                 check(name.startsWith(".") && new File(src, name.substring(1) + ".java").isFile(), "wiring: the class of " + name + " exists");
             }
         }
@@ -2360,6 +2362,273 @@ public class PureTests {
             check(!Pattern.compile("\\.to(Lower|Upper)Case\\(\\s*\\)").matcher(text).find(), "wiring: " + file.getName() + " changes the case with Locale.ROOT");
             check(!Pattern.compile("String\\.format\\((?!\\s*(java\\.util\\.)?Locale\\.ROOT)").matcher(text).find(), "wiring: " + file.getName() + " formats with Locale.ROOT");
         }
+    }
+
+    // ---------- Speed tile: the decisions, then what cannot run here, checked in the sources ----------
+
+    /** A qBittorrent that answers from a script and notes what it is asked: "METHOD path", then the form in brackets when there is a body. */
+    static final class ScriptedServer implements QbSpeed.Server {
+        final List<String> asked = new ArrayList<>();
+        private final List<QbSpeed.Reply> script = new ArrayList<>();
+
+        ScriptedServer reply(int status, String text) {
+            script.add(new QbSpeed.Reply(status, text, null));
+            return this;
+        }
+
+        ScriptedServer down() {
+            script.add(new QbSpeed.Reply(0, "", "Connection refused"));
+            return this;
+        }
+
+        @Override public QbSpeed.Reply send(String method, String path, String form) {
+            asked.add(method + " " + path + (form == null ? "" : " [" + form + "]"));
+            // A request nobody planned for shows in the list of what was asked.
+            return script.isEmpty() ? new QbSpeed.Reply(599, "unplanned", null) : script.remove(0);
+        }
+    }
+
+    static final String ASK_MODE = "GET /api/v2/transfer/speedLimitsMode";
+    static final String ASK_FLIP = "POST /api/v2/transfer/toggleSpeedLimitsMode []";
+    static final String ASK_LOGIN = "POST /api/v2/auth/login [username=u&password=p]";
+
+    static void speedExchange(String name, ScriptedServer server, boolean flip, boolean loginAllowed, QbSpeed.Outcome outcome, boolean refused, String... asked) {
+        QbSpeed.Result r = QbSpeed.exchange(server, flip, "u", "p", loginAllowed);
+        eq(outcome, r.outcome, "qbspeed: " + name + ": outcome");
+        eq(refused, r.credentialsRefused, "qbspeed: " + name + ": credentials refused");
+        eq(Arrays.asList(asked), server.asked, "qbspeed: " + name + ": requests");
+    }
+
+    static void qbSpeed() {
+        QbSpeed.Outcome on = QbSpeed.Outcome.ON;
+        QbSpeed.Outcome off = QbSpeed.Outcome.OFF;
+        QbSpeed.Outcome offline = QbSpeed.Outcome.OFFLINE;
+        QbSpeed.Outcome denied = QbSpeed.Outcome.REFUSED;
+        QbSpeed.Outcome unset = QbSpeed.Outcome.NOT_CONFIGURED;
+
+        // The address: a reverse proxy's path stays, the slashes and spaces around it go, and only http(s) counts.
+        eq("https://h/qbittorrent", QbSpeed.baseUrl("https://h/qbittorrent/"), "qbspeed: a reverse proxy's path is kept, without its last slash");
+        eq("http://192.168.1.10:8080", QbSpeed.baseUrl("  http://192.168.1.10:8080//  "), "qbspeed: spaces and slashes around the address go");
+        eq("HTTP://H", QbSpeed.baseUrl("HTTP://H"), "qbspeed: a scheme in capitals is a scheme");
+        eq("https://h:8443", QbSpeed.baseUrl("https://h:8443"), "qbspeed: a port is kept");
+        for (String bad : new String[]{null, "", "   ", "h:8080", "192.168.1.10:8080", "ftp://h", "http://", "https:///", "https://", "javascript:alert(1)", "http:/h", "file:///sdcard/x"}) {
+            eq(null, QbSpeed.baseUrl(bad), "qbspeed: not an address: " + bad);
+        }
+
+        // The login travels as a form: whatever the user typed must arrive as typed.
+        eq("username=admin&password=adminadmin", QbSpeed.loginForm("admin", "adminadmin"), "qbspeed: a plain login");
+        eq("username=a%20b&password=p%26w%3Dd%25%2B%C3%A9", QbSpeed.loginForm("a b", "p&w=d%+\u00e9"), "qbspeed: the characters of a form and an accent are escaped");
+        eq("username=-._~&password=AZaz09", QbSpeed.loginForm("-._~", "AZaz09"), "qbspeed: letters, digits and -._~ are left as they are");
+        eq("username=%F0%9F%98%80&password=", QbSpeed.loginForm("\uD83D\uDE00", ""), "qbspeed: a character of four bytes");
+        eq("username=&password=", QbSpeed.loginForm(null, null), "qbspeed: no credentials");
+        check(QbSpeed.canLogin("admin", "x") && QbSpeed.canLogin("admin", "") && QbSpeed.canLogin("", "x"), "qbspeed: a user or a password is something to log in with");
+        check(!QbSpeed.canLogin("", "") && !QbSpeed.canLogin(null, null) && !QbSpeed.canLogin(null, ""), "qbspeed: nothing is nothing to log in with");
+
+        // What the server answers to the login.
+        check(QbSpeed.loginAccepted(204, "") && QbSpeed.loginAccepted(204, null), "qbspeed: login accepted: 204");
+        check(QbSpeed.loginAccepted(200, "Ok."), "qbspeed: login accepted: 200 Ok.");
+        check(QbSpeed.loginAccepted(200, "ok"), "qbspeed: login accepted: 200 ok");
+        check(QbSpeed.loginAccepted(200, " OK.\n"), "qbspeed: login accepted: capitals, a space and a line break");
+        for (Object[] c : new Object[][]{{200, "Fails."}, {403, "Forbidden"}, {401, ""}, {500, "Ok."}, {200, ""}, {200, null}, {302, "ok"}}) {
+            check(!QbSpeed.loginAccepted((Integer) c[0], (String) c[1]), "qbspeed: login not accepted: " + c[0] + " " + c[1]);
+        }
+        for (Object[] c : new Object[][]{{403, ""}, {401, ""}, {200, "Fails."}, {200, " fails\n"}}) {
+            check(QbSpeed.loginRefused((Integer) c[0], (String) c[1]), "qbspeed: login refused: " + c[0] + " " + c[1]);
+        }
+        for (Object[] c : new Object[][]{{204, ""}, {200, "Ok."}, {200, ""}, {200, "<html>"}, {200, null}, {500, "oops"}, {502, "<html>"}, {500, "Fails."}}) {
+            check(!QbSpeed.loginRefused((Integer) c[0], (String) c[1]), "qbspeed: login not refused: " + c[0] + " " + c[1]);
+        }
+        check(QbSpeed.needsLogin(401) && QbSpeed.needsLogin(403), "qbspeed: 401 and 403 ask for a login");
+        check(!QbSpeed.needsLogin(200) && !QbSpeed.needsLogin(404) && !QbSpeed.needsLogin(500), "qbspeed: nothing else does");
+
+        // What the server answers about the limits.
+        eq(Boolean.TRUE, QbSpeed.parseMode(200, "1"), "qbspeed: 1 is on");
+        eq(Boolean.FALSE, QbSpeed.parseMode(200, "0"), "qbspeed: 0 is off");
+        eq(Boolean.TRUE, QbSpeed.parseMode(200, " 1\n"), "qbspeed: a space and a line break around the 1");
+        for (Object[] c : new Object[][]{{200, "x"}, {500, "1"}, {403, "1"}, {200, ""}, {200, null}, {200, "10"}, {200, "true"}}) {
+            eq(null, QbSpeed.parseMode((Integer) c[0], (String) c[1]), "qbspeed: not an answer about the limits: " + c[0] + " " + c[1]);
+        }
+
+        // The clocks.
+        check(QbSpeed.stale(1_000, -1), "qbspeed: an answer that was never kept is old");
+        check(!QbSpeed.stale(1_000, 1_000), "qbspeed: an answer that was just kept is fresh");
+        check(!QbSpeed.stale(1_000 + 14_999, 1_000), "qbspeed: fresh until 15 seconds");
+        check(QbSpeed.stale(1_000 + 15_000, 1_000), "qbspeed: old from 15 seconds");
+        check(QbSpeed.stale(500, 1_000), "qbspeed: a clock that went back makes it old");
+        check(QbSpeed.mayLogin(5, -1), "qbspeed: no refusal on record, so a login may be sent");
+        check(!QbSpeed.mayLogin(1_000, 1_000), "qbspeed: no login right after a refusal");
+        check(!QbSpeed.mayLogin(1_000 + 599_999, 1_000), "qbspeed: no login until 10 minutes");
+        check(QbSpeed.mayLogin(1_000 + 600_000, 1_000), "qbspeed: a login again from 10 minutes");
+        check(QbSpeed.mayLogin(500, 1_000), "qbspeed: a clock that went back lifts the wait");
+
+        // The tile.
+        QbSpeed.Look lit = QbSpeed.look(on);
+        check(lit.active, "qbspeed: on is lit");
+        eq("Activée", lit.subtitle, "qbspeed: on says Activée");
+        eq("Désactivée", QbSpeed.look(off).subtitle, "qbspeed: off says Désactivée");
+        eq("À configurer", QbSpeed.look(unset).subtitle, "qbspeed: not configured says À configurer");
+        eq("Hors ligne", QbSpeed.look(offline).subtitle, "qbspeed: unreachable says Hors ligne");
+        eq("Identifiants refusés", QbSpeed.look(denied).subtitle, "qbspeed: refused says Identifiants refusés");
+        Set<String> lines = new TreeSet<>(Arrays.asList(QbSpeed.BUSY));
+        for (QbSpeed.Outcome o : QbSpeed.Outcome.values()) {
+            if (o != on) check(!QbSpeed.look(o).active, "qbspeed: dimmed unless on: " + o);
+            lines.add(QbSpeed.look(o).subtitle);
+        }
+        eq(QbSpeed.Outcome.values().length + 1, lines.size(), "qbspeed: every state, and the wait, has a line of its own");
+
+        eq(QbSpeed.Tap.SETTINGS, QbSpeed.tap(false, false, null), "qbspeed: tap: no address opens the settings");
+        eq(QbSpeed.Tap.SETTINGS, QbSpeed.tap(false, false, on), "qbspeed: tap: an answer from before the address went doesn't count");
+        eq(QbSpeed.Tap.IGNORE, QbSpeed.tap(true, true, on), "qbspeed: tap: a request is on its way");
+        eq(QbSpeed.Tap.IGNORE, QbSpeed.tap(true, true, null), "qbspeed: tap: a request is on its way, nothing known");
+        eq(QbSpeed.Tap.TOGGLE, QbSpeed.tap(true, false, on), "qbspeed: tap: on is flipped");
+        eq(QbSpeed.Tap.TOGGLE, QbSpeed.tap(true, false, off), "qbspeed: tap: off is flipped");
+        for (QbSpeed.Outcome o : new QbSpeed.Outcome[]{null, offline, denied, unset}) {
+            eq(QbSpeed.Tap.REFRESH, QbSpeed.tap(true, false, o), "qbspeed: tap: a state that isn't known is read, never flipped: " + o);
+        }
+
+        // The exchange with the server.
+        speedExchange("a session that is open", new ScriptedServer().reply(200, "1"), false, true, on, false, ASK_MODE);
+        speedExchange("the limits are off", new ScriptedServer().reply(200, "0"), false, true, off, false, ASK_MODE);
+        speedExchange("a flip, then a read", new ScriptedServer().reply(200, "").reply(200, "1"), true, true, on, false, ASK_FLIP, ASK_MODE);
+        speedExchange("a flip answered with 204", new ScriptedServer().reply(204, "").reply(200, "0"), true, true, off, false, ASK_FLIP, ASK_MODE);
+        speedExchange("a session that ended (403)", new ScriptedServer().reply(403, "Forbidden").reply(204, "").reply(200, "1"), false, true, on, false, ASK_MODE, ASK_LOGIN, ASK_MODE);
+        speedExchange("a session that ended (401)", new ScriptedServer().reply(401, "").reply(204, "").reply(200, "0"), false, true, off, false, ASK_MODE, ASK_LOGIN, ASK_MODE);
+        speedExchange("a login that answers Ok.", new ScriptedServer().reply(403, "").reply(200, "Ok.").reply(200, "0"), false, true, off, false, ASK_MODE, ASK_LOGIN, ASK_MODE);
+        speedExchange("a flip that was turned away is sent once more, and only that one", new ScriptedServer().reply(403, "").reply(204, "").reply(200, "").reply(200, "0"),
+            true, true, off, false, ASK_FLIP, ASK_LOGIN, ASK_FLIP, ASK_MODE);
+        speedExchange("a session that ends between the flip and the read", new ScriptedServer().reply(200, "").reply(403, "").reply(204, "").reply(200, "1"),
+            true, true, on, false, ASK_FLIP, ASK_MODE, ASK_LOGIN, ASK_MODE);
+        speedExchange("a login that fails", new ScriptedServer().reply(403, "").reply(200, "Fails."), false, true, denied, true, ASK_MODE, ASK_LOGIN);
+        speedExchange("a login turned down by a ban", new ScriptedServer().reply(403, "").reply(403, "Your IP address has been banned"), false, true, denied, true, ASK_MODE, ASK_LOGIN);
+        speedExchange("a login that gets a server error", new ScriptedServer().reply(403, "").reply(500, "oops"), false, true, offline, false, ASK_MODE, ASK_LOGIN);
+        speedExchange("a login that gets a page of a proxy", new ScriptedServer().reply(403, "").reply(200, "<html>"), false, true, offline, false, ASK_MODE, ASK_LOGIN);
+        speedExchange("a session that is not kept after the login", new ScriptedServer().reply(403, "").reply(204, "").reply(403, ""), false, true, denied, true, ASK_MODE, ASK_LOGIN, ASK_MODE);
+        speedExchange("a flip turned away again after the login", new ScriptedServer().reply(403, "").reply(204, "").reply(403, ""), true, true, denied, true, ASK_FLIP, ASK_LOGIN, ASK_FLIP);
+        speedExchange("the login is sent once, however many requests", new ScriptedServer().reply(403, "").reply(204, "").reply(200, "").reply(403, ""),
+            true, true, denied, false, ASK_FLIP, ASK_LOGIN, ASK_FLIP, ASK_MODE);
+        speedExchange("a wait after a refusal", new ScriptedServer().reply(403, ""), false, false, denied, false, ASK_MODE);
+        speedExchange("a server that can't be reached", new ScriptedServer().down(), false, true, offline, false, ASK_MODE);
+        speedExchange("a flip to a server that can't be reached", new ScriptedServer().down(), true, true, offline, false, ASK_FLIP);
+        speedExchange("a login that can't be sent", new ScriptedServer().reply(403, "").down(), false, true, offline, false, ASK_MODE, ASK_LOGIN);
+        speedExchange("a request that can't be sent again", new ScriptedServer().reply(403, "").reply(204, "").down(), false, true, offline, false, ASK_MODE, ASK_LOGIN, ASK_MODE);
+        speedExchange("a flip that the server turns down", new ScriptedServer().reply(500, "boom"), true, true, offline, false, ASK_FLIP);
+        speedExchange("a flip whose read fails", new ScriptedServer().reply(200, "").down(), true, true, offline, false, ASK_FLIP, ASK_MODE);
+        speedExchange("an answer that isn't 1 or 0", new ScriptedServer().reply(200, "<html>"), false, true, offline, false, ASK_MODE);
+        speedExchange("an empty answer", new ScriptedServer().reply(200, ""), false, true, offline, false, ASK_MODE);
+        speedExchange("a gateway error", new ScriptedServer().reply(502, "Bad Gateway"), false, true, offline, false, ASK_MODE);
+
+        ScriptedServer open = new ScriptedServer().reply(200, "1");
+        QbSpeed.Result noLogin = QbSpeed.exchange(open, false, "", "", true);
+        eq(on, noLogin.outcome, "qbspeed: a server that needs no login works with no credentials");
+        eq(Arrays.asList(ASK_MODE), open.asked, "qbspeed: and none is sent");
+        ScriptedServer closed = new ScriptedServer().reply(403, "");
+        QbSpeed.Result noCredentials = QbSpeed.exchange(closed, false, "", "", true);
+        eq(denied, noCredentials.outcome, "qbspeed: a server that needs a login, with nothing to log in with");
+        check(!noCredentials.credentialsRefused, "qbspeed: nothing was sent, so nothing was turned down");
+        eq(Arrays.asList(ASK_MODE), closed.asked, "qbspeed: and no login is sent");
+        ScriptedServer odd = new ScriptedServer().reply(403, "").reply(204, "").reply(200, "1");
+        QbSpeed.exchange(odd, false, "\u00e9 x", "&=", true);
+        eq(Arrays.asList(ASK_MODE, "POST /api/v2/auth/login [username=%C3%A9%20x&password=%26%3D]", ASK_MODE), odd.asked, "qbspeed: the login carries what was typed");
+
+        // The wait after a refusal is kept per credentials, and ends with a state that was read.
+        QbSpeed.Result turnedDown = QbSpeed.exchange(new ScriptedServer().reply(403, "").reply(200, "Fails."), false, "u", "p", true);
+        QbSpeed.Result read = QbSpeed.exchange(new ScriptedServer().reply(200, "1"), false, "u", "p", true);
+        QbSpeed.Result unreachable = QbSpeed.exchange(new ScriptedServer().down(), false, "u", "p", true);
+        QbSpeed.LoginGate gate = new QbSpeed.LoginGate();
+        check(gate.allowed(1, 100), "qbspeed: gate: nothing refused yet");
+        gate.done(1, 100, turnedDown);
+        check(!gate.allowed(1, 101), "qbspeed: gate: the same credentials wait");
+        check(gate.allowed(2, 101), "qbspeed: gate: other credentials don't");
+        check(!gate.allowed(1, 100 + 599_999), "qbspeed: gate: the wait is 10 minutes");
+        check(gate.allowed(1, 100 + 600_000), "qbspeed: gate: and then over");
+        gate.done(1, 200, unreachable);
+        check(!gate.allowed(1, 201), "qbspeed: gate: a server that can't be reached doesn't lift it");
+        gate.done(2, 202, read);
+        check(!gate.allowed(1, 203), "qbspeed: gate: another credentials' success doesn't lift it");
+        gate.done(1, 204, read);
+        check(gate.allowed(1, 205), "qbspeed: gate: a state read with these credentials lifts it");
+        gate.done(3, 300, turnedDown);
+        check(gate.allowed(1, 301) && !gate.allowed(3, 301), "qbspeed: gate: the last refusal is the one that is kept");
+    }
+
+    static org.w3c.dom.Element firstElement(org.w3c.dom.Element parent, String tag) {
+        org.w3c.dom.NodeList list = parent.getElementsByTagName(tag);
+        return list.getLength() == 0 ? null : (org.w3c.dom.Element) list.item(0);
+    }
+
+    static void speedWiring() throws Exception {
+        String dir = System.getProperty("arr411.src");
+        check(dir != null, "arr411.src is set (run test.ps1)");
+        if (dir == null) return;
+        File src = new File(dir).getAbsoluteFile();
+        File root = src.getParentFile().getParentFile().getParentFile().getParentFile();
+        javax.xml.parsers.DocumentBuilder xml = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder();
+        org.w3c.dom.Document manifest = xml.parse(new File(root, "AndroidManifest.xml"));
+        String pkg = manifest.getDocumentElement().getAttribute("package");
+
+        // The system binds the tile, and nobody else may: the permission is the lock on the service, not one the app asks for.
+        org.w3c.dom.Element tile = manifestElement(manifest, "service", ".SpeedTile");
+        check(tile != null, "speed: the tile service is declared");
+        if (tile != null) {
+            eq("true", tile.getAttribute("android:exported"), "speed: the tile is exported, for the system to find it");
+            eq("android.permission.BIND_QUICK_SETTINGS_TILE", tile.getAttribute("android:permission"), "speed: only the system can bind the tile");
+            eq(Arrays.asList("android.service.quicksettings.action.QS_TILE"), manifestNames(tile, "action"), "speed: the tile hears the action of the tiles");
+            org.w3c.dom.Element toggles = firstElement(tile, "meta-data");
+            check(toggles != null && "android.service.quicksettings.TOGGLEABLE_TILE".equals(toggles.getAttribute("android:name")) && "true".equals(toggles.getAttribute("android:value")),
+                "speed: the tile says that it toggles");
+        }
+        check(!manifestNames(manifest.getDocumentElement(), "uses-permission").contains("android.permission.BIND_QUICK_SETTINGS_TILE"), "speed: the app doesn't ask for the permission that guards the tile");
+
+        // The hop of the shortcuts and of the long press on the tile: no task of its own, and nothing on the screen.
+        org.w3c.dom.Element hop = manifestElement(manifest, "activity", ".ShortcutActivity");
+        check(hop != null, "speed: the trampoline is declared");
+        if (hop != null) {
+            eq("true", hop.getAttribute("android:exported"), "speed: the trampoline can be started by the launcher");
+            check(hop.hasAttribute("android:taskAffinity") && hop.getAttribute("android:taskAffinity").isEmpty(), "speed: the trampoline has no task to join");
+            eq("true", hop.getAttribute("android:excludeFromRecents"), "speed: the trampoline stays out of the recent apps");
+            eq("true", hop.getAttribute("android:noHistory"), "speed: the trampoline leaves no history");
+            eq("@android:style/Theme.NoDisplay", hop.getAttribute("android:theme"), "speed: the trampoline shows nothing");
+            eq(Arrays.asList("android.service.quicksettings.action.QS_TILE_PREFERENCES"), manifestNames(hop, "action"), "speed: a long press on the tile ends up in the trampoline");
+        }
+        String hopSource = sourceText(new File(src, "ShortcutActivity.java"));
+        check(hopSource.contains("MainActivity.isTab("), "speed: the trampoline only passes on a tab that exists");
+        check(Pattern.compile("finally\\s*\\{\\s*(//[^\\n]*\\s*)*finish\\(\\)").matcher(hopSource).find(), "speed: the trampoline always finishes, or the system throws");
+
+        // The shortcuts: five tabs, in order, each through the trampoline.
+        org.w3c.dom.Element main = manifestElement(manifest, "activity", ".MainActivity");
+        boolean linked = false;
+        if (main != null) {
+            org.w3c.dom.NodeList metas = main.getElementsByTagName("meta-data");
+            for (int i = 0; i < metas.getLength(); i++) {
+                org.w3c.dom.Element meta = (org.w3c.dom.Element) metas.item(i);
+                linked |= "android.app.shortcuts".equals(meta.getAttribute("android:name")) && "@xml/shortcuts".equals(meta.getAttribute("android:resource"));
+            }
+        }
+        check(linked, "speed: the launcher activity points to the shortcuts");
+
+        Matcher isTab = Pattern.compile("static boolean isTab\\(String t\\)\\s*\\{(.*?)\\}", Pattern.DOTALL).matcher(sourceText(new File(src, "MainActivity.java")));
+        List<String> tabs = new ArrayList<>();
+        if (isTab.find()) {
+            Matcher name = Pattern.compile("\"(\\w+)\"\\.equals\\(t\\)").matcher(isTab.group(1));
+            while (name.find()) tabs.add(name.group(1));
+        }
+        check(tabs.size() >= 6, "speed: the tabs of the app are found: " + tabs);
+
+        org.w3c.dom.NodeList list = xml.parse(new File(root, "res/xml/shortcuts.xml")).getElementsByTagName("shortcut");
+        List<String> shown = new ArrayList<>();
+        for (int i = 0; i < list.getLength(); i++) {
+            org.w3c.dom.Element shortcut = (org.w3c.dom.Element) list.item(i);
+            org.w3c.dom.Element intent = firstElement(shortcut, "intent");
+            org.w3c.dom.Element extra = firstElement(shortcut, "extra");
+            check(intent != null && extra != null, "speed: shortcut " + i + " has an intent with an extra");
+            if (intent == null || extra == null) continue;
+            eq(pkg, intent.getAttribute("android:targetPackage"), "speed: shortcut " + i + " stays in the app");
+            eq(pkg + ".ShortcutActivity", intent.getAttribute("android:targetClass"), "speed: shortcut " + i + " goes through the trampoline");
+            eq("tab", extra.getAttribute("android:name"), "speed: shortcut " + i + " names a tab");
+            shown.add(extra.getAttribute("android:value"));
+        }
+        eq(Arrays.asList("qbit", "c411", "radarr", "sonarr", "lidarr"), shown, "speed: the shortcuts, in order");
+        check(tabs.containsAll(shown), "speed: every shortcut opens a tab that exists: " + shown + " in " + tabs);
     }
 
     public static void main(String[] args) throws Exception {
@@ -2394,7 +2663,9 @@ public class PureTests {
         updateInstallStatus();
         updateFlow();
         updateState();
+        qbSpeed();
         updateWiring();
+        speedWiring();
         System.out.println("passed " + passed + ", failed " + failed);
         System.exit(failed == 0 ? 0 : 1);
     }

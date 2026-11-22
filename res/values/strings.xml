@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="tile_speed">Vitesse alternative</string>
+
+    <string name="shortcut_qbit">qBittorrent</string>
+    <string name="shortcut_qbit_long">Ouvrir qBittorrent</string>
+    <string name="shortcut_c411">C411</string>
+    <string name="shortcut_c411_long">Ouvrir C411</string>
+    <string name="shortcut_radarr">Radarr</string>
+    <string name="shortcut_radarr_long">Ouvrir Radarr</string>
+    <string name="shortcut_sonarr">Sonarr</string>
+    <string name="shortcut_sonarr_long">Ouvrir Sonarr</string>
+    <string name="shortcut_lidarr">Lidarr</string>
+    <string name="shortcut_lidarr_long">Ouvrir Lidarr</string>
+</resources>

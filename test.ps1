@@ -15,7 +15,7 @@ if (-not (Test-Path $javac)) {
 }
 
 # The classes under test must stay free of android.* so a plain JDK can run them.
-$pure = 'BodyReader', 'BridgeKey', 'ConsoleBudget', 'CookieJars', 'DiagText', 'FileNames', 'HashedCopy', 'LogFile', 'LruThrottle', 'PageGate', 'Redact', 'RedirectPolicy', 'RestartDelay', 'SaveText', 'UpdateFailure', 'UpdateFiles', 'UpdateFlow', 'UpdateHosts', 'UpdateInstallStatus', 'UpdateIntegrity', 'UpdateJson', 'UpdateRelease', 'UpdateState', 'UpdateThrottle', 'UpdateVersion', 'UrlPolicy'
+$pure = 'BodyReader', 'BridgeKey', 'ConsoleBudget', 'CookieJars', 'DiagText', 'FileNames', 'HashedCopy', 'LogFile', 'LruThrottle', 'PageGate', 'QbSpeed', 'Redact', 'RedirectPolicy', 'RestartDelay', 'SaveText', 'UpdateFailure', 'UpdateFiles', 'UpdateFlow', 'UpdateHosts', 'UpdateInstallStatus', 'UpdateIntegrity', 'UpdateJson', 'UpdateRelease', 'UpdateState', 'UpdateThrottle', 'UpdateVersion', 'UrlPolicy'
 $sources = @()
 foreach ($name in $pure) {
   $file = "$root\src\dev\c411\qbittorrent\$name.java"

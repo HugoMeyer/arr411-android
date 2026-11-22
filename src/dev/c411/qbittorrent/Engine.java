@@ -348,9 +348,11 @@ public final class Engine {
             what = method + " " + url.getHost() + (url.getPort() > 0 ? ":" + url.getPort() : "") + url.getPath();
             JSONObject headers = req.optJSONObject("headers");
             Body body = body(req.optJSONObject("body"));
+            // Optional: waits for the server no longer than this, but at least 1 s (the tile can't hang for a minute). It can only shorten the usual waits, never lengthen them.
+            int timeoutMs = req.optInt("timeoutMs", 0);
             boolean bodyDropped = false;
             for (int hop = 0; ; hop++) {
-                c = open(url, method, headers, body, bodyDropped);
+                c = open(url, method, headers, body, bodyDropped, timeoutMs);
                 int status = c.getResponseCode();
                 cookies.keep(url, c.getHeaderFields());
                 String location = RedirectPolicy.isRedirect(status) ? c.getHeaderField("Location") : null;
@@ -437,12 +439,12 @@ public final class Engine {
         return new Body(buf.toByteArray(), "multipart/form-data; boundary=" + boundary);
     }
 
-    private static HttpURLConnection open(URL url, String method, JSONObject headers, Body body, boolean bodyDropped) throws Exception {
+    private static HttpURLConnection open(URL url, String method, JSONObject headers, Body body, boolean bodyDropped, int timeoutMs) throws Exception {
         HttpURLConnection c = (HttpURLConnection) url.openConnection();
         try {
             c.setInstanceFollowRedirects(false);
-            c.setConnectTimeout(20000);
-            c.setReadTimeout(60000);
+            c.setConnectTimeout(timeoutMs > 0 ? Math.max(1000, Math.min(timeoutMs, 20000)) : 20000);
+            c.setReadTimeout(timeoutMs > 0 ? Math.max(1000, Math.min(timeoutMs, 60000)) : 60000);
             c.setRequestMethod(method);
             // qBittorrent's CSRF protection wants Origin/Referer matching its own host.
             String origin = CookieJars.origin(url);

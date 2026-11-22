@@ -85,6 +85,8 @@
 - **Diagnostic** (Settings → Diagnostic): a log of crashes, memory problems and the reasons why Android stopped the app, ready to copy or share. See [Diagnostics](#-diagnostics).
 - **Backup** (Settings → Sauvegarde des réglages): export your settings to a JSON file (**Enregistrer** saves it in your Downloads folder, **Copier** copies the text) and import them on another device or after a reinstall. The default export leaves out passwords and API keys; the full export includes them, encrypted with a passphrase (AES-256-GCM). An import is checked and previewed before anything changes.
 - **Updates** (Settings → Mises à jour): Arr411 looks for a new release on GitHub about every 6 hours, downloads it, checks its size and SHA-256, then installs it by itself when Android allows it, or tells you when it needs a tap. You can also choose to be notified only, or switch the check off. See [Updates](#-updates).
+- **Quick Settings tile** « Vitesse alternative »: shows whether qBittorrent's alternative speed limits are on, and a tap switches them. The subtitle says *Activée* or *Désactivée*, or what is wrong: *Hors ligne*, *Identifiants refusés*, or *À configurer* (a tap then opens the settings). It uses the address and login of the qBittorrent settings. A long press opens the qBittorrent tab.
+- **App shortcuts**: long-press the Arr411 icon to jump straight to the qBittorrent, C411, Radarr, Sonarr or Lidarr tab.
 
 ---
 
@@ -143,6 +145,8 @@ Open **Réglages** from any tab's menu, or long-press a tab in the bottom bar.
 - Otherwise, open the torrent's menu in the **qBittorrent** tab and choose **Importer dans Radarr / Sonarr / Lidarr…**.
 
 > Tip: share a TMDB, IMDb or MusicBrainz link from your browser to Arr411 to add it directly.
+>
+> Tip: to switch qBittorrent's alternative speed limits from anywhere, pull the Quick Settings panel down, tap its edit (pencil) button and drag **Vitesse alternative** into it.
 
 ---
 
@@ -281,7 +285,7 @@ The keystore password is only read from the `ARR411_KEYSTORE_PASS` environment v
 powershell -ExecutionPolicy Bypass -File test.ps1
 ```
 
-This compiles the classes that don't use `android.*` (URL and redirect policy, page-message gate, log helpers, redaction, the decisions and checks of the self-update…) with the toolchain's JDK and runs `test\PureTests.java`. When Node.js is installed it also runs `test\shim`, the checks of the C411 page shim. It exits with a non-zero code if a check fails. No device or emulator is needed.
+This compiles the classes that don't use `android.*` (URL and redirect policy, page-message gate, log helpers, redaction, the decisions and checks of the self-update, the decisions of the speed tile…) with the toolchain's JDK and runs `test\PureTests.java`. When Node.js is installed it also runs `test\shim`, the checks of the C411 page shim. It exits with a non-zero code if a check fails. No device or emulator is needed.
 
 ---
 
@@ -308,7 +312,7 @@ This compiles the classes that don't use `android.*` (URL and redirect policy, p
 Paths are relative to the repository root.
 
 ```
-AndroidManifest.xml     Package, permissions, intent filters (C411 links, magnets, .torrent files, sharing), the update's job service and receivers
+AndroidManifest.xml     Package, permissions, intent filters (C411 links, magnets, .torrent files, sharing), the update's job service and receivers, the Quick Settings tile and the shortcuts' hop
 build.ps1               Gradle-free build: aapt2 → javac → d8 → zipalign → apksigner (-NoCopy skips the copy to Downloads)
 test.ps1                Compiles the android-free classes, runs test/PureTests.java and test/shim (needs node)
 test/PureTests.java     Checks for the classes below that don't use android.*
@@ -337,6 +341,9 @@ src/dev/c411/qbittorrent/
   ConsoleBudget.java    Budget for the console lines of the web pages in the log
   LruThrottle.java      Bounded per-key throttle for repeated log lines
   FileNames.java        Sanitises the names of the .torrent files saved from the C411 page
+  QbSpeed.java          The tile's decisions: how it reads and flips the alternative speed limits, logs in, and what each answer shows
+  SpeedTile.java        The Quick Settings tile « Vitesse alternative »
+  ShortcutActivity.java Invisible hop of the app shortcuts and of a long press on the tile: opens a tab without restarting the app
   Updater.java          Self-update: looks for a release on GitHub, downloads, verifies and installs it, and tells the web app (window.Native.update*)
   UpdateJobService.java Periodic check for updates (JobScheduler, about every 6 hours, kept after a reboot)
   InstallStatusReceiver.java Answer of Android's installer: done, needs a confirmation, failed
@@ -367,7 +374,7 @@ app/                    Web app (plain JavaScript, no build step)
   lidarr.js             Lidarr specifics: artists, albums, tracks, metadata profiles
   settings.js, main.js  Settings, startup and shared-link routing
 assets-extra/           engine.html and the chrome.* shims for the extension
-res/                    Launcher icon, bottom-bar icons, theme
+res/                    Launcher icon, bottom-bar icons, theme, the tile's icon, the app shortcuts and their icons
 docs/icon.png           Logo used in this README
 ```
 

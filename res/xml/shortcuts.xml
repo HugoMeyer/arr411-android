@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="qbit"
+        android:enabled="true"
+        android:icon="@drawable/shortcut_qbit"
+        android:shortcutShortLabel="@string/shortcut_qbit"
+        android:shortcutLongLabel="@string/shortcut_qbit_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="dev.c411.qbittorrent"
+            android:targetClass="dev.c411.qbittorrent.ShortcutActivity">
+            <extra android:name="tab" android:value="qbit" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="c411"
+        android:enabled="true"
+        android:icon="@drawable/shortcut_c411"
+        android:shortcutShortLabel="@string/shortcut_c411"
+        android:shortcutLongLabel="@string/shortcut_c411_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="dev.c411.qbittorrent"
+            android:targetClass="dev.c411.qbittorrent.ShortcutActivity">
+            <extra android:name="tab" android:value="c411" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="radarr"
+        android:enabled="true"
+        android:icon="@drawable/shortcut_radarr"
+        android:shortcutShortLabel="@string/shortcut_radarr"
+        android:shortcutLongLabel="@string/shortcut_radarr_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="dev.c411.qbittorrent"
+            android:targetClass="dev.c411.qbittorrent.ShortcutActivity">
+            <extra android:name="tab" android:value="radarr" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="sonarr"
+        android:enabled="true"
+        android:icon="@drawable/shortcut_sonarr"
+        android:shortcutShortLabel="@string/shortcut_sonarr"
+        android:shortcutLongLabel="@string/shortcut_sonarr_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="dev.c411.qbittorrent"
+            android:targetClass="dev.c411.qbittorrent.ShortcutActivity">
+            <extra android:name="tab" android:value="sonarr" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="lidarr"
+        android:enabled="true"
+        android:icon="@drawable/shortcut_lidarr"
+        android:shortcutShortLabel="@string/shortcut_lidarr"
+        android:shortcutLongLabel="@string/shortcut_lidarr_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="dev.c411.qbittorrent"
+            android:targetClass="dev.c411.qbittorrent.ShortcutActivity">
+            <extra android:name="tab" android:value="lidarr" />
+        </intent>
+    </shortcut>
+</shortcuts>
