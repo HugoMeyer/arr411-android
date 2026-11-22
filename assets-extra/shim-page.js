@@ -81,11 +81,16 @@ const chrome = (() => {
     runtime: {
       lastError: undefined,
       sendMessage(msg, cb) {
-        if (msg.type === 'arm') window.__qbtArmedUntil = Date.now() + 20000;
+        const arming = msg.type === 'arm';
+        if (arming) window.__qbtArmedUntil = Date.now() + 20000;
         if (msg.type === 'disarm') window.__qbtArmedUntil = 0;
         const p = new Promise((resolve) => {
           const id = nextId('p');
-          cbs[id] = resolve;
+          cbs[id] = (reply) => {
+            // A refused or failed arm leaves nothing to take over: the next download is the page's own.
+            if (arming && !(reply && reply.ok)) window.__qbtArmedUntil = 0;
+            resolve(reply);
+          };
           N.send(JSON.stringify(msg), id);
         });
         if (cb) p.then(cb);

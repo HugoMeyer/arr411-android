@@ -52,7 +52,6 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="content" />
-                <data android:scheme="file" />
                 <data android:mimeType="application/x-bittorrent" />
             </intent-filter>
             <!-- "Share" a link / title (IMDb, TMDB, TVDB, MusicBrainz, magnet, C411…) or .torrent files -->

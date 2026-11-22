@@ -176,10 +176,13 @@ Native HTTP ──── the same APIs, plus a cover proxy with a disk cache
 | `POST_NOTIFICATIONS` | Download-completed notifications (asked at first launch on Android 13+) |
 
 - Settings, passwords and API keys are stored in the app's **private storage**, excluded from Android backups, and only sent to your own servers.
-- The C411 page **never sees them**: it can only send a short whitelist of messages to the app (categories, status, send).
+- The C411 page **never sees them**: it can only send a short whitelist of messages to the app (categories, status, send). Every message is size-capped and rate limited (30 per 10 seconds, 5 sends per 10 seconds, 4 downloads at a time).
+- **The C411 page is treated as untrusted.** Sending a torrent or downloading a file is only accepted while the C411 tab is on screen and you touched it within the last 30 seconds, so a script can't trigger them on its own. What the page only reads (scores, status) is served while the tab is on screen and for a minute after you left it.
+- **No open proxy.** The native `.torrent` download only follows `https://` links on `c411.org` and its subdomains, at every redirect, and refuses IP addresses and private networks: a page can't reach the servers of your LAN. Links from other apps and web pages are only opened as `https:`, `http:` or `magnet:`, and an external app launched by a page needs a tap. The C411 tab itself is `https` only.
+- **Credentials stay with their server.** The qBittorrent session cookie is kept per server, and a redirect to another host is refused instead of followed, so an API key is never forwarded elsewhere.
 - Cleartext `http://` is allowed so LAN addresses work. Prefer HTTPS for anything exposed to the internet.
 - No analytics, no tracking. Besides C411 and your servers, the app only contacts the public **MusicBrainz** API (to match C411 music releases for Lidarr) and, as a fallback, the image servers your \*arr apps use for posters.
-- The diagnostic log stays in the app's private storage. Passwords, API keys and tokens are masked in it, but the addresses of your servers are not. Nothing leaves the phone unless you share it yourself.
+- The diagnostic log stays in the app's private storage. Passwords, API keys, tokens and C411 passkeys are masked in it, but the addresses of your servers are not. Nothing leaves the phone unless you share it yourself.
 
 ---
 
@@ -235,12 +238,23 @@ Prefer other locations? Set the `ARR411_TOOLCHAIN` environment variable to the t
 
 ```powershell
 cd arr411-android
+$env:ARR411_KEYSTORE_PASS = '<your keystore password>'
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-The script compiles the resources (aapt2), the Java code (javac, then d8), packs the extension and the web app as assets, then aligns and signs the APK. The result is `Arr411.apk` in the repository folder, also copied to your **Downloads** folder.
+The script compiles the resources (aapt2), the Java code (javac, then d8), packs the extension and the web app as assets, then aligns and signs the APK. The result is `Arr411.apk` in the repository folder, also copied to your **Downloads** folder (add `-NoCopy` to skip that copy).
 
-> 🔑 **Signing.** The first build creates `signing.keystore`. Back it up and **never commit it** (it's in `.gitignore`): Android only accepts an update signed with the same key. If you publish your own builds, change the keystore password in `build.ps1` too.
+The keystore password is only read from the `ARR411_KEYSTORE_PASS` environment variable, so it never appears on a command line or in the repository. The script stops with a message when it is missing.
+
+> 🔑 **Signing.** The first build creates `signing.keystore`, protected by the password in `ARR411_KEYSTORE_PASS`. Back the file up and **never commit it** (it's in `.gitignore`): Android only accepts an update signed with the same key. If you publish your own builds, choose your own keystore password and keep it out of the repository.
+
+**Tests**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File test.ps1
+```
+
+This compiles the classes that don't use `android.*` (URL and redirect policy, page-message gate, log helpers, redaction…) with the toolchain's JDK and runs `test\PureTests.java`. When Node.js is installed it also runs `test\shim`, the checks of the C411 page shim. It exits with a non-zero code if a check fails. No device or emulator is needed.
 
 ---
 
@@ -267,7 +281,10 @@ Paths are relative to the repository root.
 
 ```
 AndroidManifest.xml     Package, permissions, intent filters (C411 links, magnets, .torrent files, sharing)
-build.ps1               Gradle-free build: aapt2 → javac → d8 → zipalign → apksigner
+build.ps1               Gradle-free build: aapt2 → javac → d8 → zipalign → apksigner (-NoCopy skips the copy to Downloads)
+test.ps1                Compiles the android-free classes, runs test/PureTests.java and test/shim (needs node)
+test/PureTests.java     Checks for the classes below that don't use android.*
+test/shim/              Checks for assets-extra/shim-page.js (the chrome.* shim of the C411 page)
 src/dev/c411/qbittorrent/
   MainActivity.java     Two WebViews (C411 and the web app), bottom bar, intents, back navigation
   NavBar.java           Bottom bar with the active-downloads badge
@@ -279,10 +296,17 @@ src/dev/c411/qbittorrent/
   App.java              Application class: starts the diagnostic log, forwards the system's memory warnings
   Diag.java             Diagnostic log and report (crashes, memory, exit reasons), shown in Settings → Diagnostic
   LogFile.java          Size-capped rotating log file
-  Redact.java           Masks passwords, keys and tokens before anything is logged
+  Redact.java           Masks passwords, keys, tokens and passkeys before anything is logged
   DiagText.java         Text helpers of the report (durations, exit reasons, stack traces)
   BodyReader.java       Reads a server response in chunks, with a size limit
   RestartDelay.java     Back-off before rebuilding a web view that keeps dying
+  UrlPolicy.java        Which URLs may be loaded in the C411 tab, fetched for the page or opened outside
+  RedirectPolicy.java   Which redirects may be followed (same server only)
+  CookieJars.java       One cookie jar per server, so the qBittorrent session cookie never goes to another host
+  PageGate.java         Gesture window, on-screen grace, flows and rate limits for the messages sent by the C411 page
+  ConsoleBudget.java    Budget for the console lines of the web pages in the log
+  LruThrottle.java      Bounded per-key throttle for repeated log lines
+  FileNames.java        Sanitises the names of the .torrent files saved from the C411 page
 app/                    Web app (plain JavaScript, no build step)
   index.html, app.css   Shell and theme
   logo.png              Logo shown in Settings → About

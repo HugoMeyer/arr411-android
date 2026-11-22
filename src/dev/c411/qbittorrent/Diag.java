@@ -24,12 +24,14 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 /**
@@ -48,13 +50,20 @@ final class Diag {
     private static final long BIG_RESPONSE_CHARS = 2L * 1024 * 1024;
     private static final long SLOW_REQUEST_MS = 8_000;
     private static final long SERIOUS_EXIT_TOAST_MS = 6L * 3600 * 1000;
+    private static final int THROTTLE_KEYS = 300;
+    private static final int WRITE_QUEUE = 256;
+    private static final long FLUSH_WAIT_MS = 400;
 
-    private static final class Throttle {
-        long last;
-        int skipped;
-    }
-
-    private static final Map<String, Throttle> throttles = new HashMap<>();
+    private static final LruThrottle throttles = new LruThrottle(THROTTLE_KEYS);
+    private static final ConsoleBudget consoleBudget = new ConsoleBudget();
+    // Lines wait here for the one thread that writes them. When the queue is full the line is dropped: no caller ever waits for the disk.
+    private static final AtomicInteger pending = new AtomicInteger();
+    private static final ThreadPoolExecutor writer = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(WRITE_QUEUE), r -> {
+                Thread t = new Thread(r, "arr411-diag-io");
+                t.setDaemon(true);
+                return t;
+            });
 
     private static Application app;
     private static LogFile log;
@@ -99,7 +108,10 @@ final class Diag {
                 return t;
             });
             worker.execute(Diag::startup);
-            worker.scheduleWithFixedDelay(() -> memoryLine("every 15 min"), 15, 15, TimeUnit.MINUTES);
+            worker.scheduleWithFixedDelay(() -> {
+                consoleSummary();
+                memoryLine("every 15 min");
+            }, 15, 15, TimeUnit.MINUTES);
         } catch (Throwable ignored) {
         }
     }
@@ -131,12 +143,50 @@ final class Diag {
     }
 
     static void log(String level, String message) {
+        log(level, message, false);
+    }
+
+    /** {@code now}: written before returning, after the lines still waiting (the crash path: the process may end right after). */
+    private static void log(String level, String message, boolean now) {
         try {
             String line = DiagText.timestamp(System.currentTimeMillis()) + " " + level + " " + Redact.clean(DiagText.oneLine(message, 2000));
             LogFile file = log;
-            if (file != null) file.append(line);
+            if (file != null) {
+                if (now) {
+                    flush();
+                    file.append(line);
+                } else {
+                    write(file, line);
+                }
+            }
             Log.println("ERROR".equals(level) ? Log.ERROR : "WARN".equals(level) ? Log.WARN : Log.INFO, TAG, line);
         } catch (Throwable ignored) {
+        }
+    }
+
+    private static void write(LogFile file, String line) {
+        pending.incrementAndGet();
+        try {
+            writer.execute(() -> {
+                try {
+                    file.append(line);
+                } catch (Throwable ignored) {
+                } finally {
+                    pending.decrementAndGet();
+                }
+            });
+        } catch (Throwable dropped) {
+            pending.decrementAndGet();
+        }
+    }
+
+    /** Waits a little for the lines handed to the writer to reach the disk: before the report reads the file, or a synchronous write. */
+    private static void flush() {
+        long end = SystemClock.elapsedRealtime() + FLUSH_WAIT_MS;
+        try {
+            while (pending.get() > 0 && SystemClock.elapsedRealtime() < end) Thread.sleep(5);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -158,30 +208,16 @@ final class Diag {
             }
             LogFile file = crash;
             if (file != null) file.append(text + "\n");
-            log("ERROR", title + (error == null ? "" : ": " + error) + " (details in crash.log)");
+            log("ERROR", title + (error == null ? "" : ": " + error) + " (details in crash.log)", true);
         } catch (Throwable ignored) {
         }
     }
 
     /** The reason to log again, or null when the same thing was logged under this key less than {@code intervalMs} ago; "" or " (+3 similar)". */
     private static String throttled(String key, long intervalMs) {
-        long now = SystemClock.elapsedRealtime();
-        String id = key.length() > 200 ? key.substring(0, 200) : key;
-        synchronized (throttles) {
-            Throttle t = throttles.get(id);
-            if (t == null) {
-                if (throttles.size() >= 300) throttles.clear();
-                t = new Throttle();
-                throttles.put(id, t);
-            } else if (now - t.last < intervalMs) {
-                t.skipped++;
-                return null;
-            }
-            int skipped = t.skipped;
-            t.skipped = 0;
-            t.last = now;
-            return skipped > 0 ? " (+" + skipped + " similar)" : "";
-        }
+        int skipped = throttles.allow(key.length() > 200 ? key.substring(0, 200) : key, SystemClock.elapsedRealtime(), intervalMs);
+        if (skipped < 0) return null;
+        return skipped > 0 ? " (+" + skipped + " similar)" : "";
     }
 
     // ---------- What happens to the app ----------
@@ -232,16 +268,30 @@ final class Diag {
         }
     }
 
-    /** What a page says went wrong in its script. The pages of other sites (ads, trackers) are not the app's business. */
+    /** What a page says went wrong in its script. The pages of other sites (ads, trackers) are not the app's business. Called on the UI thread: no disk access here. */
     static void console(String which, ConsoleMessage message) {
         try {
             if (message == null || message.messageLevel() != ConsoleMessage.MessageLevel.ERROR) return;
             String source = message.sourceId();
             if (thirdParty(source)) return;
-            String text = DiagText.oneLine(message.message(), 300);
+            String raw = message.message();
+            String text = DiagText.oneLine(raw != null && raw.length() > 1000 ? raw.substring(0, 1000) : raw, 300);
             String where = shortSource(source) + ":" + message.lineNumber();
             String more = throttled("js:" + which + where + text, 60_000);
-            if (more != null) log("WARN", which + " page script error: " + text + " (" + where + ")" + more);
+            if (more == null) return;
+            int dropped = consoleBudget.take(SystemClock.elapsedRealtime());
+            if (dropped < 0) return;
+            if (dropped > 0) log("WARN", "console : " + dropped + " lignes ignorées");
+            log("WARN", which + " page script error: " + text + " (" + where + ")" + more);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** Announces the console lines dropped over budget that no later line has announced yet. */
+    private static void consoleSummary() {
+        try {
+            int dropped = consoleBudget.takeIgnored();
+            if (dropped > 0) log("WARN", "console : " + dropped + " lignes ignorées");
         } catch (Throwable ignored) {
         }
     }
@@ -296,6 +346,7 @@ final class Diag {
 
     static void clear() {
         try {
+            flush();
             if (log != null) log.clear();
             if (crash != null) crash.clear();
             if (prefs != null) prefs.edit().putLong("clearedAt", System.currentTimeMillis()).apply();
@@ -407,8 +458,8 @@ final class Diag {
     private static boolean thirdParty(String sourceId) {
         try {
             if (sourceId == null || !sourceId.startsWith("http")) return false;
-            Uri u = Uri.parse(sourceId);
-            return u.getHost() != null && !MainActivity.isC411(u) && !SpaClient.HOST.equals(u.getHost());
+            String host = Uri.parse(sourceId).getHost();
+            return host != null && !UrlPolicy.isC411Host(host) && !SpaClient.HOST.equals(host);
         } catch (Throwable e) {
             return false;
         }
@@ -424,6 +475,8 @@ final class Diag {
     // ---------- The report ----------
 
     static String report() {
+        consoleSummary();
+        flush();
         StringBuilder t = new StringBuilder();
         try {
             t.append("Arr411 Android diagnostic report\n");

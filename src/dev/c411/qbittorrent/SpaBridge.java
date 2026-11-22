@@ -7,8 +7,9 @@ import android.webkit.JavascriptInterface;
 
 import org.json.JSONObject;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /** window.Native for the Arr411 web app (Radarr, Sonarr, Lidarr, qBittorrent, settings). */
 final class SpaBridge {
@@ -17,7 +18,15 @@ final class SpaBridge {
     private final MainActivity act;
     private final Engine engine;
     // Response bodies wait here until the page takes them (keeps big JSON out of evaluateJavascript).
-    final Map<String, String> texts = new ConcurrentHashMap<>();
+    // Bounded: when nobody takes them (the page was reloaded under us), the oldest ones go first instead of everything.
+    final Map<String, String> texts = Collections.synchronizedMap(new LinkedHashMap<String, String>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
+            boolean full = size() > MAX_WAITING;
+            if (full) Diag.problem("texts-evicted", "dropping a response the page never took", null);
+            return full;
+        }
+    });
 
     SpaBridge(MainActivity act) {
         this.act = act;
@@ -31,29 +40,27 @@ final class SpaBridge {
 
     @JavascriptInterface
     public void http(String reqJson, String id) {
-        engine.io().execute(() -> {
+        boolean queued = engine.tryIo(() -> {
             int status = 0;
             String error = null;
             try {
                 Engine.Resp r = Engine.request(reqJson);
                 status = r.status;
                 error = r.error;
-                if (error == null) {
-                    if (texts.size() >= MAX_WAITING) {
-                        // Nobody takes them (the page was reloaded under us): better to lose them than to fill the memory.
-                        Diag.warn("dropping " + texts.size() + " responses the page never took");
-                        texts.clear();
-                    }
-                    texts.put(id, r.text == null ? "" : r.text);
-                }
+                if (error == null) texts.put(id, r.text == null ? "" : r.text);
             } catch (Throwable e) {
                 // The page waits for an answer whatever happens.
                 Diag.serious("app request failed", e, null);
                 error = e instanceof OutOfMemoryError ? "Mémoire insuffisante" : "Erreur interne";
             }
-            act.spaJs("window.__nativeDone&&__nativeDone(" + JSONObject.quote(id) + "," + status + ","
-                    + (error == null ? "null" : JSONObject.quote(error)) + ")");
+            done(id, status, error);
         });
+        if (!queued) done(id, 0, Engine.BUSY);
+    }
+
+    private void done(String id, int status, String error) {
+        act.spaJs("window.__nativeDone&&__nativeDone(" + JSONObject.quote(id) + "," + status + ","
+                + (error == null ? "null" : JSONObject.quote(error)) + ")");
     }
 
     @JavascriptInterface

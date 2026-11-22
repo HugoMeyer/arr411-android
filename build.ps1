@@ -1,10 +1,15 @@
-# Builds Arr411.apk (C411 + qBittorrent + Radarr + Sonarr + Lidarr) without Gradle. Usage: powershell -File build.ps1
+# Builds Arr411.apk (C411 + qBittorrent + Radarr + Sonarr + Lidarr) without Gradle.
+# Usage: $env:ARR411_KEYSTORE_PASS = '<keystore password>'; powershell -File build.ps1 [-NoCopy]
+#   -NoCopy: do not copy the APK to the Downloads folder.
+param([switch]$NoCopy)
 $ErrorActionPreference = 'Continue'
 $root = $PSScriptRoot
 $parent = Split-Path $root
 # Toolchain (JDK 17 + Android SDK): $env:ARR411_TOOLCHAIN, or the android-toolchain folder next to this one.
 $tc = if ($env:ARR411_TOOLCHAIN) { $env:ARR411_TOOLCHAIN } else { Join-Path $parent 'android-toolchain' }
 if (-not (Test-Path "$tc\jdk\bin\javac.exe")) { throw "JDK 17 not found in $tc\jdk (see README, Building from source)" }
+# The keystore password only travels through the environment: never in this file, never on a command line.
+if (-not $env:ARR411_KEYSTORE_PASS) { throw 'Keystore password missing: set $env:ARR411_KEYSTORE_PASS before running build.ps1 (see README, Building from source)' }
 # Extension sources (arr411-chrome): $env:ARR411_EXTENSION, or the arr411-chrome repository next to this one.
 $ext = if ($env:ARR411_EXTENSION) { $env:ARR411_EXTENSION } else { Join-Path $parent 'arr411-chrome' }
 foreach ($f in 'background.js', 'content.js', 'page-hook.js') {
@@ -50,12 +55,15 @@ $z.Dispose()
 $ks = "$root\signing.keystore"
 if (-not (Test-Path $ks)) {
   & keytool -genkeypair -keystore $ks -alias c411 -keyalg RSA -keysize 2048 -validity 10000 `
-    -storepass c411qbit -keypass c411qbit -dname "CN=C411 qBittorrent" 2>$null
+    -storepass:env ARR411_KEYSTORE_PASS -keypass:env ARR411_KEYSTORE_PASS -dname "CN=C411 qBittorrent" 2>$null
+  if ($LASTEXITCODE) { throw 'keytool' }
 }
 $out = "$root\Arr411.apk"
-& "$bt\apksigner.bat" sign --ks $ks --ks-pass pass:c411qbit --ks-key-alias c411 --out $out "$b\aligned.apk"
+& "$bt\apksigner.bat" sign --ks $ks --ks-pass env:ARR411_KEYSTORE_PASS --ks-key-alias c411 --out $out "$b\aligned.apk"
 if ($LASTEXITCODE) { throw 'apksigner' }
 & "$bt\apksigner.bat" verify $out; if ($LASTEXITCODE) { throw 'verify' }
-$dl = Join-Path $env:USERPROFILE 'Downloads'
-if (Test-Path $dl) { Copy-Item $out "$dl\Arr411.apk" -Force }
+if (-not $NoCopy) {
+  $dl = Join-Path $env:USERPROFILE 'Downloads'
+  if (Test-Path $dl) { Copy-Item $out "$dl\Arr411.apk" -Force }
+}
 "APK: $out ($((Get-Item $out).Length) bytes)"

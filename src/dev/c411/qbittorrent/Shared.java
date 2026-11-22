@@ -31,11 +31,13 @@ final class Shared {
         if (Intent.ACTION_VIEW.equals(action)) {
             Uri d = in.getData();
             if (d == null) return null;
-            if ("content".equals(d.getScheme()) || "file".equals(d.getScheme())) uris.add(d);
-            else text = d.toString();
+            String scheme = d.getScheme();
+            if ("content".equals(scheme)) uris.add(d);
+            else if ("magnet".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme) || "http".equalsIgnoreCase(scheme)) text = d.toString();
+            else return null;
         } else if (Intent.ACTION_SEND.equals(action)) {
             Uri u = in.getParcelableExtra(Intent.EXTRA_STREAM);
-            if (u != null) uris.add(u);
+            if (isContent(u)) uris.add(u);
             else {
                 CharSequence t = in.getCharSequenceExtra(Intent.EXTRA_TEXT);
                 if (t == null || t.toString().trim().isEmpty()) t = in.getCharSequenceExtra(Intent.EXTRA_SUBJECT);
@@ -43,7 +45,7 @@ final class Shared {
             }
         } else if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
             ArrayList<Uri> list = in.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
-            if (list != null) for (Uri u : list) if (u != null) uris.add(u);
+            if (list != null) for (Uri u : list) if (isContent(u)) uris.add(u);
         } else {
             return null;
         }
@@ -51,7 +53,7 @@ final class Shared {
         if (uris.isEmpty() && (text == null || text.trim().isEmpty()) && clip != null) {
             for (int i = 0; i < clip.getItemCount(); i++) {
                 ClipData.Item it = clip.getItemAt(i);
-                if (it.getUri() != null) uris.add(it.getUri());
+                if (isContent(it.getUri())) uris.add(it.getUri());
                 else if (text == null && it.getText() != null) text = it.getText().toString();
             }
         }
@@ -68,7 +70,13 @@ final class Shared {
         return o.toString();
     }
 
+    // Only content: URIs: a file: URI sent by another app would point into our own private storage.
+    private static boolean isContent(Uri u) {
+        return u != null && "content".equals(u.getScheme());
+    }
+
     static JSONObject readTorrent(Context ctx, Uri u) throws Exception {
+        if (!isContent(u)) throw new Exception("source de fichier non prise en charge");
         String name = displayName(ctx, u);
         byte[] data;
         try (InputStream in = ctx.getContentResolver().openInputStream(u)) {

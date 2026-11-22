@@ -17,7 +17,9 @@ import android.os.Bundle;
 import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.view.KeyEvent;
 import android.view.Menu;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -46,6 +48,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /** Arr411: C411 (with the extension injected) + the Radarr / Sonarr / Lidarr / qBittorrent web app, behind a bottom bar. */
 public class MainActivity extends Activity implements NavBar.Listener {
@@ -71,7 +74,8 @@ public class MainActivity extends Activity implements NavBar.Listener {
     private View hairline;
     private ProgressBar progress;
     private String bundle;
-    private boolean spaReady, dead, resumed, loading;
+    private boolean spaReady, loading;
+    private volatile boolean dead, resumed;
     private final List<String> sharedQueue = new ArrayList<>();
     private ValueCallback<Uri[]> fileCb;
     private Toast lastToast;
@@ -126,7 +130,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
 
         boolean fresh = state == null && (getIntent().getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0;
         if (fresh) handleIntent(getIntent(), false);
-        engine.io().execute(() -> SpaClient.prune(getCacheDir()));
+        engine.tryIo(() -> SpaClient.prune(getCacheDir()));
     }
 
     // ---------- WebViews ----------
@@ -151,18 +155,24 @@ public class MainActivity extends Activity implements NavBar.Listener {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest req) {
                 Uri u = req.getUrl();
-                String sc = u.getScheme() == null ? "" : u.getScheme().toLowerCase();
+                String sc = u.getScheme() == null ? "" : u.getScheme().toLowerCase(Locale.ROOT);
                 if ("magnet".equals(sc)) {
                     shared(textJson(u.toString()));
                     return true;
                 }
                 if ("http".equals(sc) || "https".equals(sc)) {
-                    if (isC411(u) || !req.isForMainFrame()) return false;
-                    openExternal(u.toString());
+                    if (!req.isForMainFrame()) return false;
+                    String target = c411Page(u);
+                    if (target == null) {
+                        openExternal(u.toString());
+                        return true;
+                    }
+                    if (target.equals(u.toString())) return false;
+                    view.loadUrl(target); // http://c411.org → https
                     return true;
                 }
                 if (sc.isEmpty() || "about".equals(sc) || "data".equals(sc) || "blob".equals(sc) || "javascript".equals(sc)) return false;
-                engine.openUrl(u.toString()); // mailto:, tel:, market:…
+                if (req.hasGesture()) engine.openUrl(u.toString()); // a page must not launch other apps by itself
                 return true;
             }
 
@@ -262,7 +272,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
     }
 
     private void inject(String url) {
-        if (dead || url == null || !isC411(Uri.parse(url))) return;
+        if (dead || !UrlPolicy.isC411Page(url)) return;
         c411.evaluateJavascript(bundle, null);
         if (desktopMode()) c411.evaluateJavascript(DESKTOP_JS, null);
     }
@@ -296,14 +306,18 @@ public class MainActivity extends Activity implements NavBar.Listener {
         p.edit().remove("desktop").apply();
     }
 
+    /** The https address to load for a C411 link from an intent, a share or the web app, or null: http is upgraded, any other scheme is refused. */
+    static String c411Page(Uri u) {
+        return u == null ? null : UrlPolicy.c411Https(u.toString());
+    }
+
     static boolean isC411(Uri u) {
-        String h = u == null ? null : u.getHost();
-        return h != null && (h.equalsIgnoreCase("c411.org") || h.toLowerCase().endsWith(".c411.org"));
+        return c411Page(u) != null;
     }
 
     private static String c411Url(Intent i) {
-        Uri u = i == null ? null : i.getData();
-        return u != null && isC411(u) ? u.toString() : HOME;
+        String page = i == null ? null : c411Page(i.getData());
+        return page != null ? page : HOME;
     }
 
     void c411Js(String js) {
@@ -324,6 +338,48 @@ public class MainActivity extends Activity implements NavBar.Listener {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    // ---------- Page bridge gate ----------
+
+    /** The user is looking at the C411 tab of a resumed activity: a page message that acts on something needs this. Any thread. */
+    boolean c411Visible() {
+        return !dead && resumed && "c411".equals(tab);
+    }
+
+    /** Tells the bridge when the C411 tab goes on or off the screen: what the page only reads is still served for a minute after it left. */
+    private void c411ScreenChanged() {
+        if (page != null) page.gate.screen(c411Visible(), SystemClock.elapsedRealtime());
+    }
+
+    /** A real touch on the C411 view opens the bridge's gesture window; the page cannot produce one. */
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        int a = ev.getActionMasked();
+        if ((a == MotionEvent.ACTION_DOWN || a == MotionEvent.ACTION_UP) && page != null && c411Visible() && onC411View(ev)) {
+            page.gate.gesture(SystemClock.elapsedRealtime());
+        }
+        return super.dispatchTouchEvent(ev);
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent ev) {
+        if (ev.getAction() == KeyEvent.ACTION_DOWN && page != null && c411Visible() && isActivationKey(ev.getKeyCode())) {
+            page.gate.gesture(SystemClock.elapsedRealtime());
+        }
+        return super.dispatchKeyEvent(ev);
+    }
+
+    private static boolean isActivationKey(int code) {
+        return code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_NUMPAD_ENTER
+                || code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_SPACE;
+    }
+
+    private boolean onC411View(MotionEvent ev) {
+        int[] at = new int[2];
+        c411.getLocationOnScreen(at);
+        float x = ev.getRawX(), y = ev.getRawY();
+        return x >= at[0] && x < at[0] + c411.getWidth() && y >= at[1] && y < at[1] + c411.getHeight();
     }
 
     // ---------- Tabs & navigation ----------
@@ -353,6 +409,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
                 hideKeyboard();
             }
             tab = name;
+            c411ScreenChanged();
             boolean web = !"c411".equals(name);
             c411.setVisibility(web ? View.INVISIBLE : View.VISIBLE);
             spa.setVisibility(web ? View.VISIBLE : View.INVISIBLE);
@@ -383,7 +440,8 @@ public class MainActivity extends Activity implements NavBar.Listener {
     void openC411(String url, boolean tellSpa) {
         if (dead) return;
         showTab("c411", tellSpa);
-        if (url != null && isC411(Uri.parse(url))) c411.loadUrl(url);
+        String target = url == null ? null : UrlPolicy.c411Https(url);
+        if (target != null) c411.loadUrl(target);
     }
 
     void reloadC411() {
@@ -393,9 +451,9 @@ public class MainActivity extends Activity implements NavBar.Listener {
     /** Links leaving the app: C411 opens in its tab, magnets go to qBittorrent, the rest to other apps. */
     void openExternal(String url) {
         if (dead || url == null || url.isEmpty()) return;
-        Uri u = Uri.parse(url);
-        if (isC411(u)) openC411(url, true);
-        else if ("magnet".equalsIgnoreCase(u.getScheme())) shared(textJson(url));
+        String target = UrlPolicy.c411Https(url);
+        if (target != null) openC411(target, true);
+        else if (url.regionMatches(true, 0, "magnet:", 0, 7)) shared(textJson(url));
         else engine.openUrl(url);
     }
 
@@ -547,14 +605,14 @@ public class MainActivity extends Activity implements NavBar.Listener {
             return;
         }
         String action = in.getAction();
-        Uri data = in.getData();
-        if (Intent.ACTION_VIEW.equals(action) && isC411(data)) {
-            if (running) openC411(data.toString(), true);
+        String page = Intent.ACTION_VIEW.equals(action) ? c411Page(in.getData()) : null;
+        if (page != null) {
+            if (running) openC411(page, true);
             else showTab("c411", true);
             return;
         }
         if (Intent.ACTION_VIEW.equals(action) || Intent.ACTION_SEND.equals(action) || Intent.ACTION_SEND_MULTIPLE.equals(action)) {
-            engine.io().execute(() -> {
+            boolean queued = engine.tryIo(() -> {
                 try {
                     String json = Shared.fromIntent(this, in);
                     if (json != null) runOnUiThread(() -> shared(json));
@@ -562,6 +620,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
                     toast("Partage impossible : " + e.getMessage());
                 }
             });
+            if (!queued) toast("Partage impossible : " + Engine.BUSY);
         }
     }
 
@@ -596,6 +655,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
     protected void onResume() {
         super.onResume();
         resumed = true;
+        c411ScreenChanged();
         Diag.foreground(true);
         if (dead) return;
         c411.onResume();
@@ -606,6 +666,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
     @Override
     protected void onPause() {
         resumed = false;
+        c411ScreenChanged();
         Diag.foreground(false);
         if (!dead) {
             c411.onPause();
@@ -663,6 +724,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
 
     private void destroyWebViews() {
         dead = true;
+        c411ScreenChanged();
         if (fileCb != null) {
             fileCb.onReceiveValue(null);
             fileCb = null;

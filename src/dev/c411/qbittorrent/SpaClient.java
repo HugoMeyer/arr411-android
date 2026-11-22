@@ -20,15 +20,20 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Serves the web app from assets/app at https://arr411.local/app/ and proxies Radarr/Sonarr/Lidarr covers (/mc). */
 final class SpaClient extends WebViewClient {
     static final String HOST = "arr411.local";
     static final String START = "https://arr411.local/app/index.html";
     private static final long COVER_TTL = 7L * 24 * 3600 * 1000;
+    private static final int PRUNE_EVERY = 64;
+    private static final long TMP_STALE_MS = 60_000;
+    private static final AtomicInteger writes = new AtomicInteger();
 
     private final MainActivity act;
     private final File covers;
@@ -129,6 +134,7 @@ final class SpaClient extends WebViewClient {
             }
             if (!tmp.renameTo(f)) //noinspection ResultOfMethodCallIgnored
                 tmp.delete();
+            else if (writes.incrementAndGet() % PRUNE_EVERY == 0) act.engine.tryIo(() -> prune(act.getCacheDir()));
             return new WebResourceResponse(mime(target), null, new ByteArrayInputStream(data));
         }
         return f.isFile() ? image(f, target) : status(404, "Not Found"); // stale copy when offline
@@ -145,11 +151,29 @@ final class SpaClient extends WebViewClient {
     private static byte[] fetch(String url, String key) {
         HttpURLConnection c = null;
         try {
-            c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(15000);
-            c.setReadTimeout(30000);
-            c.setRequestProperty("X-Api-Key", key);
-            if (c.getResponseCode() != 200) return null;
+            URL current = new URL(url);
+            for (int hops = 0; ; hops++) {
+                c = (HttpURLConnection) current.openConnection();
+                c.setInstanceFollowRedirects(false);
+                c.setConnectTimeout(15000);
+                c.setReadTimeout(30000);
+                c.setRequestProperty("X-Api-Key", key);
+                int status = c.getResponseCode();
+                if (!RedirectPolicy.isRedirect(status)) {
+                    if (status != 200) return null;
+                    break;
+                }
+                // The key travels only to the server it was meant for.
+                URL next = RedirectPolicy.resolve(current, c.getHeaderField("Location"));
+                c.disconnect();
+                c = null;
+                if (next == null || hops >= RedirectPolicy.MAX_REDIRECTS) return null;
+                if (!RedirectPolicy.staysOnServer(current, next)) {
+                    Diag.problem("cover-redirect", RedirectPolicy.refusal(next), null);
+                    return null;
+                }
+                current = next;
+            }
             String ct = c.getContentType();
             if (ct != null && !ct.startsWith("image/")) return null;
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -186,15 +210,21 @@ final class SpaClient extends WebViewClient {
     static void prune(File cacheDir) {
         File[] files = new File(cacheDir, "covers").listFiles();
         if (files == null) return;
+        long now = System.currentTimeMillis();
+        List<File> kept = new ArrayList<>();
         long total = 0;
         for (File f : files) {
-            if (f.getName().contains(".tmp")) //noinspection ResultOfMethodCallIgnored
+            if (!f.getName().contains(".tmp")) {
+                kept.add(f);
+                total += f.length();
+            } else if (now - f.lastModified() > TMP_STALE_MS) { // not a copy being written right now
+                //noinspection ResultOfMethodCallIgnored
                 f.delete();
-            else total += f.length();
+            }
         }
         if (total < 150L * 1024 * 1024) return;
-        Arrays.sort(files, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-        for (File f : files) {
+        kept.sort((a, b) -> Long.compare(a.lastModified(), b.lastModified()));
+        for (File f : kept) {
             if (total < 100L * 1024 * 1024) break;
             total -= f.length();
             //noinspection ResultOfMethodCallIgnored

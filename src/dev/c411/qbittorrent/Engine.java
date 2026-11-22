@@ -26,9 +26,6 @@ import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.net.CookieHandler;
-import java.net.CookieManager;
-import java.net.CookiePolicy;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -36,9 +33,11 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /** Runs the extension's background.js in a hidden WebView and gives it native HTTP, storage and notifications. */
@@ -52,7 +51,14 @@ public final class Engine {
     // The engine's own requests are small now (it asks for what it needs only) and go through three copies on their way to the page.
     private static final int ENGINE_BODY_LIMIT = 16 * 1024 * 1024;
     private static final int BODY_LIMIT = 64 * 1024 * 1024;
+    // The largest message handed to the engine: an uploaded torrent (16 MB) as base64 inside JSON, with its escapes.
+    static final int MAX_MESSAGE_CHARS = 28 * 1024 * 1024;
+    private static final int IO_THREADS = 8;
+    private static final int IO_QUEUE = 64;
+    static final String BUSY = "Trop de requêtes en cours : réessaie dans un instant";
     private static final AtomicInteger ioThreads = new AtomicInteger();
+    // The qBittorrent session cookie lives here, per server, and nowhere else: no other request carries it.
+    private static final CookieJars cookies = new CookieJars();
 
     public static synchronized Engine get(Context c) {
         if (instance == null) instance = new Engine(c.getApplicationContext());
@@ -61,18 +67,14 @@ public final class Engine {
 
     private final Context ctx;
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final ExecutorService pool = Executors.newCachedThreadPool(r -> {
-        Thread t = new Thread(r, "arr411-io-" + ioThreads.incrementAndGet());
-        // A background task that fails is written down and dropped: it must not take the whole app down with it.
-        t.setUncaughtExceptionHandler((thread, error) -> Diag.uncaught(thread, error, false));
-        return t;
-    });
+    private final ThreadPoolExecutor pool = newPool();
     private final RestartDelay restarts = new RestartDelay();
     private final SharedPreferences prefs;
     private final Map<String, Callback> pending = new ConcurrentHashMap<>();
     private final List<Runnable> queue = new ArrayList<>();
     private final AtomicInteger seq = new AtomicInteger();
     private final AtomicInteger notifId = new AtomicInteger(100);
+    private volatile JSONObject configCache; // never modified once published: storageMerge builds a new one
     private WebView wv; // main thread only
     private boolean ready = false;
     public volatile EventSink sink;
@@ -80,10 +82,20 @@ public final class Engine {
     private Engine(Context ctx) {
         this.ctx = ctx;
         prefs = ctx.getSharedPreferences("config", Context.MODE_PRIVATE);
-        CookieHandler.setDefault(new CookieManager(null, CookiePolicy.ACCEPT_ALL));
         NotificationManager nm = ctx.getSystemService(NotificationManager.class);
         nm.createNotificationChannel(new NotificationChannel("done", "Téléchargements terminés", NotificationManager.IMPORTANCE_DEFAULT));
         wv = createWebView();
+    }
+
+    private static ThreadPoolExecutor newPool() {
+        ThreadPoolExecutor p = new ThreadPoolExecutor(IO_THREADS, IO_THREADS, 30, TimeUnit.SECONDS, new ArrayBlockingQueue<>(IO_QUEUE), r -> {
+            Thread t = new Thread(r, "arr411-io-" + ioThreads.incrementAndGet());
+            // A background task that fails is written down and dropped: it must not take the whole app down with it.
+            t.setUncaughtExceptionHandler((thread, error) -> Diag.uncaught(thread, error, false));
+            return t;
+        });
+        p.allowCoreThreadTimeOut(true);
+        return p;
     }
 
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
@@ -123,18 +135,35 @@ public final class Engine {
         return w;
     }
 
-    /** Thread pool for blocking work (HTTP, files). */
-    public ExecutorService io() {
-        return pool;
+    /** Runs blocking work (HTTP, files) on the pool; false when it is saturated, and the caller then reports the failure itself. */
+    public boolean tryIo(Runnable task) {
+        try {
+            pool.execute(task);
+            return true;
+        } catch (RejectedExecutionException e) {
+            return false;
+        }
     }
 
     /** Sends a message to background.js; the callback receives its JSON response. */
     public void send(String msgJson, Callback cb) {
         String id = "m" + seq.incrementAndGet();
+        String script = null;
+        if (msgJson != null && msgJson.length() <= MAX_MESSAGE_CHARS) {
+            try {
+                script = "__engineHandle(" + JSONObject.quote(id) + "," + JSONObject.quote(msgJson) + ")";
+            } catch (OutOfMemoryError ignored) {
+                // answered below
+            }
+        }
+        if (script == null) {
+            main.post(() -> cb.done("{\"ok\":false,\"error\":\"Message trop volumineux\"}"));
+            return;
+        }
+        String js = script;
         pending.put(id, cb);
         Runnable r = () -> {
-            if (wv != null) wv.evaluateJavascript(
-                    "__engineHandle(" + JSONObject.quote(id) + "," + JSONObject.quote(msgJson) + ")", null);
+            if (wv != null) wv.evaluateJavascript(js, null);
         };
         main.post(() -> {
             if (ready) r.run();
@@ -151,29 +180,36 @@ public final class Engine {
         }
     }
 
+    /** The saved settings. Shared and read-only: change them through storageMerge. */
     public JSONObject config() {
-        try {
-            return new JSONObject(prefs.getString("data", "{}"));
-        } catch (Exception e) {
-            return new JSONObject();
+        JSONObject c = configCache;
+        if (c == null) {
+            try {
+                c = new JSONObject(prefs.getString("data", "{}"));
+            } catch (Exception e) {
+                c = new JSONObject();
+            }
+            configCache = c;
         }
+        return c;
     }
 
     public synchronized void storageMerge(String json) {
         try {
-            JSONObject cur = config();
+            JSONObject cur = new JSONObject(config().toString());
             JSONObject add = new JSONObject(json);
             for (Iterator<String> it = add.keys(); it.hasNext(); ) {
                 String k = it.next();
                 cur.put(k, add.get(k));
             }
             prefs.edit().putString("data", cur.toString()).apply();
+            configCache = cur;
         } catch (Exception ignored) {
         }
     }
 
     public void openUrl(String url) {
-        if (url == null || url.isEmpty()) return;
+        if (!UrlPolicy.isExternalOpenable(url)) return;
         Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
             ctx.startActivity(i);
@@ -241,7 +277,7 @@ public final class Engine {
 
         @JavascriptInterface
         public void http(String reqJson, String id) {
-            pool.execute(() -> {
+            boolean queued = tryIo(() -> {
                 String js;
                 try {
                     js = "__httpDone(" + JSONObject.quote(id) + "," + JSONObject.quote(doHttp(reqJson)) + ")";
@@ -256,6 +292,12 @@ public final class Engine {
                     if (wv != null) wv.evaluateJavascript(script, null);
                 });
             });
+            if (!queued) {
+                String script = "__httpDone(" + JSONObject.quote(id) + "," + JSONObject.quote("{\"error\":\"" + BUSY + "\"}") + ")";
+                main.post(() -> {
+                    if (wv != null) wv.evaluateJavascript(script, null);
+                });
+            }
         }
     }
 
@@ -301,70 +343,50 @@ public final class Engine {
         try {
             JSONObject req = new JSONObject(reqJson);
             URL url = new URL(req.getString("url"));
+            String method = req.optString("method", "GET");
             // For the log: where and what, never the query or a login.
-            what = req.optString("method", "GET") + " " + url.getHost() + (url.getPort() > 0 ? ":" + url.getPort() : "") + url.getPath();
-            c = (HttpURLConnection) url.openConnection();
-            c.setConnectTimeout(20000);
-            c.setReadTimeout(60000);
-            c.setRequestMethod(req.optString("method", "GET"));
-            // qBittorrent's CSRF protection wants Origin/Referer matching its own host.
-            String origin = url.getProtocol() + "://" + url.getAuthority();
-            c.setRequestProperty("Origin", origin);
-            c.setRequestProperty("Referer", origin + "/");
+            what = method + " " + url.getHost() + (url.getPort() > 0 ? ":" + url.getPort() : "") + url.getPath();
             JSONObject headers = req.optJSONObject("headers");
-            if (headers != null) {
-                for (Iterator<String> it = headers.keys(); it.hasNext(); ) {
-                    String k = it.next();
-                    c.setRequestProperty(k, headers.getString(k));
-                }
-            }
-            JSONObject body = req.optJSONObject("body");
-            String type = body == null ? "none" : body.optString("type", "none");
-            if ("text".equals(type)) {
-                byte[] data = body.getString("text").getBytes(StandardCharsets.UTF_8);
-                c.setDoOutput(true);
-                c.setFixedLengthStreamingMode(data.length);
-                try (OutputStream os = c.getOutputStream()) {
-                    os.write(data);
-                }
-            } else if ("multipart".equals(type)) {
-                String boundary = "----c411qbt" + System.nanoTime();
-                ByteArrayOutputStream buf = new ByteArrayOutputStream();
-                org.json.JSONArray parts = body.getJSONArray("parts");
-                for (int i = 0; i < parts.length(); i++) {
-                    JSONObject p = parts.getJSONObject(i);
-                    StringBuilder h = new StringBuilder("--").append(boundary).append("\r\n")
-                            .append("Content-Disposition: form-data; name=\"").append(p.getString("name")).append('"');
-                    if (p.has("base64")) {
-                        h.append("; filename=\"").append(p.optString("filename", "file").replace("\"", "")).append("\"\r\n")
-                                .append("Content-Type: ").append(p.optString("contentType", "application/octet-stream")).append("\r\n\r\n");
-                        buf.write(h.toString().getBytes(StandardCharsets.UTF_8));
-                        buf.write(Base64.decode(p.getString("base64"), Base64.DEFAULT));
+            Body body = body(req.optJSONObject("body"));
+            boolean bodyDropped = false;
+            for (int hop = 0; ; hop++) {
+                c = open(url, method, headers, body, bodyDropped);
+                int status = c.getResponseCode();
+                cookies.keep(url, c.getHeaderFields());
+                String location = RedirectPolicy.isRedirect(status) ? c.getHeaderField("Location") : null;
+                if (location != null) {
+                    // Redirects are followed by hand: only within the same server, so that the API key and the session cookie never reach another one.
+                    URL next = RedirectPolicy.resolve(url, location);
+                    if (next == null) {
+                        res.error = "Redirection invalide";
+                    } else if (hop >= RedirectPolicy.MAX_REDIRECTS) {
+                        res.error = "Trop de redirections";
+                    } else if (!RedirectPolicy.staysOnServer(url, next)) {
+                        res.error = RedirectPolicy.refusal(next);
                     } else {
-                        h.append("\r\n\r\n").append(p.optString("value"));
-                        buf.write(h.toString().getBytes(StandardCharsets.UTF_8));
+                        String nextMethod = RedirectPolicy.nextMethod(status, method);
+                        if (!nextMethod.equals(method)) {
+                            method = nextMethod;
+                            body = null;
+                            bodyDropped = true;
+                        }
+                        url = next;
+                        c.disconnect();
+                        continue;
                     }
-                    buf.write("\r\n".getBytes(StandardCharsets.UTF_8));
+                    break;
                 }
-                buf.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
-                byte[] data = buf.toByteArray();
-                c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-                c.setDoOutput(true);
-                c.setFixedLengthStreamingMode(data.length);
-                try (OutputStream os = c.getOutputStream()) {
-                    os.write(data);
+                InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
+                String text = "";
+                if (in != null) {
+                    try (InputStream stream = in) {
+                        text = BodyReader.readText(stream, c.getContentLengthLong(), bodyLimit);
+                    }
                 }
+                res.status = status;
+                res.text = text;
+                break;
             }
-            int status = c.getResponseCode();
-            InputStream in = status >= 400 ? c.getErrorStream() : c.getInputStream();
-            String text = "";
-            if (in != null) {
-                try (InputStream stream = in) {
-                    text = BodyReader.readText(stream, c.getContentLengthLong(), bodyLimit);
-                }
-            }
-            res.status = status;
-            res.text = text;
         } catch (BodyReader.TooLargeException e) {
             res.error = "Réponse trop volumineuse (plus de " + (e.limit >> 20) + " Mo) : abandon pour protéger la mémoire";
         } catch (OutOfMemoryError e) {
@@ -377,5 +399,76 @@ public final class Engine {
         }
         Diag.http(what, res.status, res.error, res.text.length(), SystemClock.elapsedRealtime() - started);
         return res;
+    }
+
+    private static final class Body {
+        final byte[] data;
+        final String contentType; // null: the request's own headers decide
+
+        Body(byte[] data, String contentType) {
+            this.data = data;
+            this.contentType = contentType;
+        }
+    }
+
+    private static Body body(JSONObject body) throws Exception {
+        String type = body == null ? "none" : body.optString("type", "none");
+        if ("text".equals(type)) return new Body(body.getString("text").getBytes(StandardCharsets.UTF_8), null);
+        if (!"multipart".equals(type)) return null;
+        String boundary = "----c411qbt" + System.nanoTime();
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        org.json.JSONArray parts = body.getJSONArray("parts");
+        for (int i = 0; i < parts.length(); i++) {
+            JSONObject p = parts.getJSONObject(i);
+            StringBuilder h = new StringBuilder("--").append(boundary).append("\r\n")
+                    .append("Content-Disposition: form-data; name=\"").append(p.getString("name")).append('"');
+            if (p.has("base64")) {
+                h.append("; filename=\"").append(p.optString("filename", "file").replace("\"", "")).append("\"\r\n")
+                        .append("Content-Type: ").append(p.optString("contentType", "application/octet-stream")).append("\r\n\r\n");
+                buf.write(h.toString().getBytes(StandardCharsets.UTF_8));
+                buf.write(Base64.decode(p.getString("base64"), Base64.DEFAULT));
+            } else {
+                h.append("\r\n\r\n").append(p.optString("value"));
+                buf.write(h.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            buf.write("\r\n".getBytes(StandardCharsets.UTF_8));
+        }
+        buf.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        return new Body(buf.toByteArray(), "multipart/form-data; boundary=" + boundary);
+    }
+
+    private static HttpURLConnection open(URL url, String method, JSONObject headers, Body body, boolean bodyDropped) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) url.openConnection();
+        try {
+            c.setInstanceFollowRedirects(false);
+            c.setConnectTimeout(20000);
+            c.setReadTimeout(60000);
+            c.setRequestMethod(method);
+            // qBittorrent's CSRF protection wants Origin/Referer matching its own host.
+            String origin = CookieJars.origin(url);
+            c.setRequestProperty("Origin", origin);
+            c.setRequestProperty("Referer", origin + "/");
+            String cookie = cookies.header(url);
+            if (cookie != null) c.setRequestProperty("Cookie", cookie);
+            if (headers != null) {
+                for (Iterator<String> it = headers.keys(); it.hasNext(); ) {
+                    String k = it.next();
+                    if (bodyDropped && k.equalsIgnoreCase("Content-Type")) continue;
+                    c.setRequestProperty(k, headers.getString(k));
+                }
+            }
+            if (body != null) {
+                if (body.contentType != null) c.setRequestProperty("Content-Type", body.contentType);
+                c.setDoOutput(true);
+                c.setFixedLengthStreamingMode(body.data.length);
+                try (OutputStream os = c.getOutputStream()) {
+                    os.write(body.data);
+                }
+            }
+            return c;
+        } catch (Exception e) {
+            c.disconnect();
+            throw e;
+        }
     }
 }
