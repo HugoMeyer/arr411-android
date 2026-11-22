@@ -631,7 +631,9 @@
     const more = h('div.more.hidden');
     const scroll = h('div.scroll', stateBox, list, more);
     const fab = h('button.fab', { type: 'button', 'aria-label': 'Ajouter un torrent', onclick: () => App.run(() => Q.openAdd()) }, App.icon('plus'));
-    App.append(page.el, searchRow, strip, chips, scroll, fab);
+    const dashBanner = h('div.dash-banner.hidden');
+    App.append(page.el, searchRow, strip, chips, dashBanner, scroll, fab);
+    if (App.dash) App.dash.banner(dashBanner);
     ui = { page, searchBtn, filterDot, normalActions, selActions, selClose, searchRow, searchInput, dlTxt, upTxt, freeEl, strip, hideChip, hideOnIc, hideOffIc, hideX, hideTxt, hideN, catChip, catTxt, tagChip, tagTxt, chipEls, stateBox, list, more, scroll, fab, searchOpen: false, stateKey: null, limit: CHUNK, lsig: null, moreN: 0, io: null };
     // Scrolling near the end appends the next chunk; the button below stays as a fallback.
     if (typeof IntersectionObserver === 'function') {
@@ -768,6 +770,7 @@
           }
         },
         '-',
+        App.dash ? { icon: 'chart-bar', label: 'Tableau de bord ratio', sub: App.dash.menuSub(), onClick: () => Q.openDash() } : null,
         { icon: 'folder', label: 'Catégories et étiquettes', onClick: () => Q.openCategories() },
         { icon: 'adjustments-horizontal', label: 'Préférences qBittorrent', onClick: () => Q.openPrefs() },
         { icon: 'document-text', label: 'Journal', onClick: () => Q.openLog() },

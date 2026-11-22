@@ -41,6 +41,7 @@
 ### ⬇️ qBittorrent
 - Torrent list with live **speeds** and **free space**, filters (downloading, seeding, completed, paused, active, stalled, errors), **categories and tags**, search and many sort orders.
 - **Hidden tags**: torrents tagged `zen-farm` (ratio farming) are hidden by default, so the list stays fast with tens of thousands of them. A chip above the list shows them again, and the funnel menu lets you choose other tags to hide. *Resume all* and *Pause all* still act on every torrent, hidden or not.
+- **Ratio and Zen dashboard** (qBittorrent menu → *Tableau de bord ratio*): ratio and totals for the `zen-farm` tag versus the other torrents, how many are really seeding and why the rest are not (queued, paused, error), **hit-and-run alerts** (also shown as a banner above the list), and **clean-up rules** you run by hand: add or remove a tag, pause, resume or delete. A rule always shows a preview and asks for confirmation; incomplete or at-risk torrents are never deleted, and files stay on disk unless you tick the box.
 - **Multi-select** with bulk actions.
 - **Torrent details** with *Infos*, *Fichiers* (priorities, rename), *Trackers* and *Pairs* (peers) tabs.
 - **Actions**: pause / resume, force resume, recheck, reannounce, category, tags, move, rename, speed and share limits, sequential download, queue priority, copy magnet links, delete with or without files.
@@ -315,6 +316,7 @@ app/                    Web app (plain JavaScript, no build step)
   logo.png              Logo shown in Settings → About
   core.js, icons.js     UI toolkit, API clients and icons
   qbit.js, qbit-more.js qBittorrent tab
+  dash.js               qBittorrent ratio and Zen dashboard, hit-and-run alerts, clean-up rules
   arr.js, arr-more.js   Radarr, Sonarr and Lidarr screens: library, add, activity, calendar, import, system
   lidarr.js             Lidarr specifics: artists, albums, tracks, metadata profiles
   settings.js, main.js  Settings, startup and shared-link routing
