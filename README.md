@@ -82,6 +82,7 @@
 - **Dark, green interface** inspired by C411. The bottom bar hides while you type.
 - **Long-press** the Radarr, Sonarr, Lidarr or qBittorrent tab to jump to its settings.
 - **Diagnostic** (Settings → Diagnostic): a log of crashes, memory problems and the reasons why Android stopped the app, ready to copy or share. See [Diagnostics](#-diagnostics).
+- **Backup** (Settings → Sauvegarde des réglages): export your settings to a JSON file and import them on another device or after a reinstall. The default export leaves out passwords and API keys; the full export includes them, encrypted with a passphrase (AES-256-GCM). An import is checked and previewed before anything changes.
 
 ---
 

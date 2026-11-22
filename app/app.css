@@ -402,3 +402,17 @@ body.upd-new .page > .head:not(.has-back) > .head-actions > .icon-btn[aria-label
 .upd-notes { max-height: 220px; margin: 4px 0 12px; font-size: 12.5px; }
 .score-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 .score-hint { margin-bottom: 10px; }
+
+/* ---------- Sauvegarde ---------- */
+.bk-count { margin: 2px 0 10px; font-size: 13px; color: var(--muted); }
+.bk-prev { color: var(--text); font-size: 13.5px; }
+.bk-src { margin-bottom: 12px; font-size: 12.5px; color: var(--muted); }
+.bk-list, .bk-urls ul, .bk-skip ul { list-style: none; margin: 0; padding: 0; }
+.bk-list { margin-bottom: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+.bk-list li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 12px; }
+.bk-list li + li { border-top: 1px solid var(--line); }
+.bk-list b { color: var(--pri); font-variant-numeric: tabular-nums; }
+.bk-t { margin: 14px 0 6px; font-size: 11.5px; font-weight: 750; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; }
+.bk-urls li, .bk-skip li { padding: 3px 0; font-size: 12.5px; color: var(--muted); }
+.bk-skip .mono { color: var(--text); }
+.bk-hint { margin-top: 12px; font-size: 12px; color: var(--dim); }

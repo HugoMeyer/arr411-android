@@ -693,10 +693,18 @@
     loadCats();
     scrollToAnchor();
   }
+  // For the backup card (backup.js): typed values are saved before an export or an import, and the page is redrawn after an import.
+  S.flushForms = () => {
+    for (const F of forms) if (F.dirty()) F.save();
+  };
+  S.refresh = onShow;
+  function backupCard() {
+    return App.backup ? card('backup', 'shield-check', 'Sauvegarde des réglages', App.backup.body()) : null;
+  }
   S.init = function () {
     if (page) return;
     page = App.page({ title: 'Réglages', subtitle: 'Arr411', back: true, onBack: leave });
-    scroll = h('div.scroll', qbitCard(), arrCard('radarr'), arrCard('sonarr'), arrCard('lidarr'), c411Card(), scoreCard(), notifCard(), updateCard(), diagCard(), about());
+    scroll = h('div.scroll', qbitCard(), arrCard('radarr'), arrCard('sonarr'), arrCard('lidarr'), c411Card(), scoreCard(), notifCard(), updateCard(), backupCard(), diagCard(), about());
     page.el.appendChild(scroll);
     page.onShow = onShow;
     App.push(TAB, page);
