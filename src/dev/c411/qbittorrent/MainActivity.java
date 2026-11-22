@@ -85,7 +85,6 @@ public class MainActivity extends Activity implements NavBar.Listener {
         super.onCreate(state);
         Diag.lifecycle("activity created (" + (state == null ? "fresh" : "restored after the system ended it") + ")");
         engine = Engine.get(this);
-        bundle = buildBundle();
         migrateDesktopPref();
         Window w = getWindow();
         w.setStatusBarColor(BG);
@@ -149,6 +148,7 @@ public class MainActivity extends Activity implements NavBar.Listener {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(w, true);
         page = new PageBridge(this);
+        bundle = buildBundle(page.key); // the script and the bridge it talks to are always made together
         page.userAgent = s.getUserAgentString();
         w.addJavascriptInterface(page, "QbtPage");
         w.setWebViewClient(new WebViewClient() {
@@ -288,8 +288,14 @@ public class MainActivity extends Activity implements NavBar.Listener {
         }
     }
 
-    private String buildBundle() {
-        return "(function(){ if (window.__qbtLoaded) return; window.__qbtLoaded = true;\n"
+    /**
+     * The script injected in the C411 page. The key of its bridge is a constant of the function, out of reach of the scripts and frames of the
+     * page; the script does not even start in another document (an evaluation can land after a navigation).
+     */
+    private String buildBundle(String key) {
+        return "(function(){ if (window.__qbtLoaded || location.protocol !== 'https:' || !/(^|\\.)c411\\.org$/.test(location.hostname)) return;"
+                + " window.__qbtLoaded = true;\n"
+                + "const __qbtKey = " + JSONObject.quote(key) + ";\n"
                 + asset("shim-page.js") + "\n" + asset("page-hook.js") + "\n" + asset("content.js")
                 + "\n})();";
     }

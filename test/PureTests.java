@@ -15,6 +15,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Checks for the classes of src that don't use android.*: run them with test.ps1. No framework: a failed check prints its name
@@ -882,6 +884,51 @@ public class PureTests {
         eq("/", CookieJars.uri(url("https://h")).getRawPath(), "an empty path is /");
     }
 
+    // ---------- Bridge key ----------
+
+    static void bridgeKey() {
+        final String key = "0123456789abcdef0123456789abcdef";
+        check(BridgeKey.matches(key, key), "the same key");
+        check(BridgeKey.matches(key, new String(key.toCharArray())), "an equal copy of the key, not the same object");
+        check(!BridgeKey.matches(key, "0123456789abcdef0123456789abcdee"), "a wrong key: the last character differs");
+        check(!BridgeKey.matches(key, "f123456789abcdef0123456789abcdef"), "a wrong key: the first character differs");
+        check(!BridgeKey.matches(key, key.toUpperCase()), "the case matters");
+        check(!BridgeKey.matches(key, null), "no key given");
+        check(!BridgeKey.matches(key, ""), "an empty key");
+        check(!BridgeKey.matches(key, key.substring(0, 31)), "the beginning of the key is not enough");
+        check(!BridgeKey.matches(key, key + "0"), "the key followed by another character");
+        check(!BridgeKey.matches(key, key + key), "the key twice");
+        check(!BridgeKey.matches(key, "0"), "a short key");
+        check(!BridgeKey.matches(null, null), "a bridge without a key refuses everything (null)");
+        check(!BridgeKey.matches("", ""), "a bridge without a key refuses everything (empty)");
+        check(!BridgeKey.matches(null, key), "a bridge without a key refuses a key");
+        check(!BridgeKey.matches("", "x"), "an empty expected key matches nothing");
+        check(!BridgeKey.matches("a\u0000", "a"), "a missing character is not a zero character");
+
+        String a = BridgeKey.create();
+        String b = BridgeKey.create();
+        check(a.matches("[0-9a-f]{32}"), "128 bits as 32 lowercase hexadecimal characters: " + a);
+        check(!a.equals(b), "a new key every time");
+        check(BridgeKey.matches(a, a) && !BridgeKey.matches(a, b), "a created key matches itself only");
+    }
+
+    /** The methods the page can call all start with the key check: that is what keeps a foreign frame out of the limits of the page. */
+    static void bridgeMethods() throws Exception {
+        String dir = System.getProperty("arr411.src");
+        check(dir != null, "arr411.src is set (run test.ps1)");
+        if (dir == null) return;
+        String source = new String(Files.readAllBytes(new File(dir, "PageBridge.java").toPath()), StandardCharsets.UTF_8);
+        Matcher m = Pattern.compile("@JavascriptInterface\\s+public\\s+\\w+\\s+(\\w+)\\(([^)]*)\\)\\s*\\{\\s*([^\\r\\n]*)").matcher(source);
+        List<String> found = new ArrayList<>();
+        while (m.find()) {
+            found.add(m.group(1));
+            check(m.group(2).startsWith("String k,"), "PageBridge." + m.group(1) + " takes the key first");
+            eq("if (!keyOk(k)) return;", m.group(3).trim(), "PageBridge." + m.group(1) + " checks the key before anything else");
+        }
+        Collections.sort(found);
+        eq(Arrays.asList("download", "fetchBytes", "saveFile", "send", "toast"), found, "the methods the shim calls");
+    }
+
     public static void main(String[] args) throws Exception {
         bodyReader();
         logFile();
@@ -900,6 +947,8 @@ public class PureTests {
         consoleBudget();
         fileNames();
         cookieJars();
+        bridgeKey();
+        bridgeMethods();
         System.out.println("passed " + passed + ", failed " + failed);
         System.exit(failed == 0 ? 0 : 1);
     }

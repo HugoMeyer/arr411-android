@@ -7,19 +7,28 @@ const path = require('path');
 
 const SHIM = fs.readFileSync(path.join(__dirname, '..', '..', 'assets-extra', 'shim-page.js'), 'utf8');
 const TORRENT = 'https://c411.org/download/abc.torrent';
+const KEY = '0123456789abcdef0123456789abcdef';
 
-// Returns the `chrome` object the shim defines for content.js, with what the native side received.
-function loadShim() {
+// Returns the `chrome` object the shim defines for content.js, with what the native side received. The Android bundle declares `__qbtKey`
+// around the shim (the bridge only answers a call that starts with it): `key` is that value, and `declared: false` leaves it out, as the Desktop bundle does.
+function loadShim({ declared = true, key = KEY } = {}) {
   const sent = [];
   const downloads = [];
   const pageClicks = [];
+  const calls = [];
   const win = {
     QbtPage: {
-      send: (json, id) => sent.push({ msg: JSON.parse(json), id }),
-      download: (url, name) => downloads.push({ url, name }),
-      toast() {},
-      saveFile() {},
-      fetchBytes() {}
+      send: (...args) => {
+        calls.push({ name: 'send', args });
+        sent.push({ msg: JSON.parse(args[1]), id: args[2] });
+      },
+      download: (...args) => {
+        calls.push({ name: 'download', args });
+        downloads.push({ url: args[1], name: args[2] });
+      },
+      toast: (...args) => void calls.push({ name: 'toast', args }),
+      saveFile: (...args) => void calls.push({ name: 'saveFile', args }),
+      fetchBytes: (...args) => void calls.push({ name: 'fetchBytes', args })
     },
     open: () => null
   };
@@ -44,8 +53,14 @@ function loadShim() {
   const location = { href: 'https://c411.org/torrents/1' };
   // The shim assigns URL.createObjectURL: give it its own constructor, not Node's.
   class PageURL extends URL {}
-  const chrome = new Function('window', 'document', 'HTMLAnchorElement', 'URL', 'location', SHIM + '\nreturn chrome;')(win, doc, Anchor, PageURL, location);
-  return { chrome, win, sent, downloads, pageClicks, link: (href) => new Anchor(href) };
+  const names = ['window', 'document', 'HTMLAnchorElement', 'URL', 'location'];
+  const values = [win, doc, Anchor, PageURL, location];
+  if (declared) {
+    names.push('__qbtKey');
+    values.push(key);
+  }
+  const chrome = new Function(...names, SHIM + '\nreturn chrome;')(...values);
+  return { chrome, win, sent, downloads, pageClicks, calls, link: (href) => new Anchor(href) };
 }
 
 test('a refused arm disarms the shim at once: the next download is the page\'s own, not swallowed', async () => {
@@ -102,4 +117,54 @@ test('an empty answer counts as a failed arm, and disarm clears an armed shim', 
   assert.ok(win.__qbtArmedUntil > Date.now());
   chrome.runtime.sendMessage({ type: 'disarm' });
   assert.equal(win.__qbtArmedUntil, 0);
+});
+
+test('every call of the shim to the native bridge starts with the key of the app', async () => {
+  const { chrome, win, sent, calls, link } = loadShim();
+
+  chrome.runtime.sendMessage({ type: 'getCategories' }); // send
+  chrome.runtime.sendMessage({ type: 'arm' });
+  win.__qbtReply(sent[1].id, JSON.stringify({ ok: true }));
+  link(TORRENT).click(); // download
+
+  win.fetch = async () => new Response(new Blob(['d4:infoe']));
+  await win.__qbtSaveBlob('blob:https://c411.org/1', 'a.torrent'); // saveFile
+  win.fetch = async () => {
+    throw new Error('boom');
+  };
+  await win.__qbtSaveBlob('blob:https://c411.org/1', 'a.torrent'); // toast: a blob that cannot be read
+
+  const fetched = win.__qbtFetch(TORRENT); // fetchBytes: the page cannot fetch it itself
+  await new Promise((resolve) => setImmediate(resolve));
+  const fetchCall = calls.find((c) => c.name === 'fetchBytes');
+  assert.ok(fetchCall, 'the shim asked the app for the file');
+  win.__qbtReply(fetchCall.args[3], JSON.stringify({ status: 200, base64: 'ZDQ6aW5mb2U=' }));
+  assert.equal((await fetched).status, 200);
+
+  assert.deepEqual([...new Set(calls.map((c) => c.name))].sort(), ['download', 'fetchBytes', 'saveFile', 'send', 'toast']);
+  for (const c of calls) assert.equal(c.args[0], KEY, c.name + ' starts with the key');
+  assert.equal(calls.find((c) => c.name === 'saveFile').args[1], 'a.torrent', 'the other arguments follow the key');
+  assert.equal(calls.find((c) => c.name === 'fetchBytes').args[1], TORRENT);
+});
+
+test('the key stays inside the shim: it is not a property of the page nor of the chrome object', () => {
+  const { chrome, win } = loadShim();
+  const holders = [win, chrome, chrome.runtime];
+  for (const holder of holders) {
+    for (const name of Object.getOwnPropertyNames(holder)) {
+      if (holder === win && name === 'QbtPage') continue;
+      assert.notEqual(holder[name], KEY, name);
+      assert.ok(!name.includes('Key'), name);
+    }
+  }
+  assert.ok(!('__qbtKey' in win));
+});
+
+test('without a key declared around the shim (Desktop), or with one that is not a string, the shim sends an empty key', () => {
+  for (const options of [{ declared: false }, { key: 42 }, { key: null }]) {
+    const { chrome, calls } = loadShim(options);
+    chrome.runtime.sendMessage({ type: 'getCategories' });
+    assert.equal(calls[0].name, 'send', JSON.stringify(options));
+    assert.equal(calls[0].args[0], '', JSON.stringify(options));
+  }
 });

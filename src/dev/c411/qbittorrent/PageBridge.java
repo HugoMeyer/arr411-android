@@ -22,8 +22,9 @@ import java.net.URL;
 
 /**
  * window.QbtPage for the C411 tab: the injected extension talks to background.js through this. The page runs scripts of third parties and
- * addJavascriptInterface exposes this object to every frame, so nothing here trusts the caller: every request goes through {@link PageGate}
- * (a real touch, a visible tab, rate limits) and the sizes are capped before anything is parsed.
+ * addJavascriptInterface exposes this object to every frame, so nothing here trusts the caller: every call starts with the {@link BridgeKey}
+ * (only the script injected in the page knows it), every request goes through {@link PageGate} (a real touch, a visible tab, rate limits)
+ * and the sizes are capped before anything is parsed.
  */
 final class PageBridge {
     private static final int FILE_LIMIT = 16 * 1024 * 1024;
@@ -34,6 +35,8 @@ final class PageBridge {
     private final MainActivity act;
     private final Engine engine;
     final PageGate gate = new PageGate();
+    /** Goes into the script injected for this bridge (MainActivity.buildBundle) and nowhere else: never logged, never given to the page. */
+    final String key = BridgeKey.create();
     volatile String userAgent = "";
 
     PageBridge(MainActivity act) {
@@ -41,8 +44,16 @@ final class PageBridge {
         this.engine = act.engine;
     }
 
+    /** A call from another frame, or from a script that is not the injected one: no effect, no answer, and it does not use the page's limits. */
+    private boolean keyOk(String k) {
+        if (BridgeKey.matches(key, k)) return true;
+        Diag.problem("page-key", "a call to the page bridge with a wrong or missing key (a frame or a script that is not the injected one): ignored", null);
+        return false;
+    }
+
     @JavascriptInterface
-    public void send(String msgJson, String id) {
+    public void send(String k, String msgJson, String id) {
+        if (!keyOk(k)) return;
         if (msgJson == null || msgJson.isEmpty()) {
             refuse(id, PageGate.REFUSED);
             return;
@@ -88,7 +99,8 @@ final class PageBridge {
     }
 
     @JavascriptInterface
-    public void download(String url, String filename) {
+    public void download(String k, String url, String filename) {
+        if (!keyOk(k)) return;
         if (url == null || url.length() > UrlPolicy.MAX_URL) return;
         String error = gate.admit("download", SystemClock.elapsedRealtime(), act.c411Visible());
         if (error != null) {
@@ -101,7 +113,8 @@ final class PageBridge {
 
     /** Saves a .torrent the page read from a blob: the app asked for (see saveLocally): nothing else is written to Downloads on its word. */
     @JavascriptInterface
-    public void saveFile(String name, String base64, String mime) {
+    public void saveFile(String k, String name, String base64, String mime) {
+        if (!keyOk(k)) return;
         String error = gate.admit("saveFile", SystemClock.elapsedRealtime(), act.c411Visible());
         if (error != null) {
             refused(error);
@@ -131,14 +144,16 @@ final class PageBridge {
     }
 
     @JavascriptInterface
-    public void toast(String text) {
+    public void toast(String k, String text) {
+        if (!keyOk(k)) return;
         String shown = PageGate.toastText(text);
         if (shown != null && gate.allowToast(SystemClock.elapsedRealtime(), act.c411Visible())) act.toast(shown);
     }
 
     // Native download with the WebView's cookies: avoids page CORS limits on .torrent URLs. Only C411 itself, and every redirect is checked again.
     @JavascriptInterface
-    public void fetchBytes(String url, String referer, String id) {
+    public void fetchBytes(String k, String url, String referer, String id) {
+        if (!keyOk(k)) return;
         String error = gate.admit("fetchBytes", SystemClock.elapsedRealtime(), act.c411Visible());
         if (error == null && !UrlPolicy.isFetchTarget(url)) error = FETCH_REFUSED;
         if (error == null && !gate.beginFetch()) error = PageGate.TOO_MANY_FETCHES;

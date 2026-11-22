@@ -178,6 +178,7 @@ Native HTTP ──── the same APIs, plus a cover proxy with a disk cache
 - Settings, passwords and API keys are stored in the app's **private storage**, excluded from Android backups, and only sent to your own servers.
 - The C411 page **never sees them**: it can only send a short whitelist of messages to the app (categories, status, send). Every message is size-capped and rate limited (30 per 10 seconds, 5 sends per 10 seconds, 4 downloads at a time).
 - **The C411 page is treated as untrusted.** Sending a torrent or downloading a file is only accepted while the C411 tab is on screen and you touched it within the last 30 seconds, so a script can't trigger them on its own. What the page only reads (scores, status) is served while the tab is on screen and for a minute after you left it.
+- **Only the script the app injects can talk to the app.** A random key is made when the C411 tab is created and goes into that script only; every call without it (an ad, another frame of the page) is ignored and doesn't use up the limits of the page.
 - **No open proxy.** The native `.torrent` download only follows `https://` links on `c411.org` and its subdomains, at every redirect, and refuses IP addresses and private networks: a page can't reach the servers of your LAN. Links from other apps and web pages are only opened as `https:`, `http:` or `magnet:`, and an external app launched by a page needs a tap. The C411 tab itself is `https` only.
 - **Credentials stay with their server.** The qBittorrent session cookie is kept per server, and a redirect to another host is refused instead of followed, so an API key is never forwarded elsewhere.
 - Cleartext `http://` is allowed so LAN addresses work. Prefer HTTPS for anything exposed to the internet.
@@ -289,7 +290,7 @@ src/dev/c411/qbittorrent/
   MainActivity.java     Two WebViews (C411 and the web app), bottom bar, intents, back navigation
   NavBar.java           Bottom bar with the active-downloads badge
   Engine.java           Hidden WebView running background.js: native HTTP, storage, notifications
-  PageBridge.java       window.QbtPage for the C411 tab (whitelisted messages, native .torrent download)
+  PageBridge.java       window.QbtPage for the C411 tab (key-protected, whitelisted messages, native .torrent download)
   SpaBridge.java        window.Native for the web app
   SpaClient.java        Serves the web app at https://arr411.local/app/, proxies and caches covers
   Shared.java           Turns shared links and .torrent files into app actions
@@ -304,6 +305,7 @@ src/dev/c411/qbittorrent/
   RedirectPolicy.java   Which redirects may be followed (same server only)
   CookieJars.java       One cookie jar per server, so the qBittorrent session cookie never goes to another host
   PageGate.java         Gesture window, on-screen grace, flows and rate limits for the messages sent by the C411 page
+  BridgeKey.java        Per-session secret that tells the script injected in the C411 tab from the other frames
   ConsoleBudget.java    Budget for the console lines of the web pages in the log
   LruThrottle.java      Bounded per-key throttle for repeated log lines
   FileNames.java        Sanitises the names of the .torrent files saved from the C411 page

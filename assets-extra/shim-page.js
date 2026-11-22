@@ -3,6 +3,8 @@
 const chrome = (() => {
   if (window.__qbtChrome) return window.__qbtChrome;
   const N = window.QbtPage;
+  // Declared by the app around this script (the bridge only answers a call that starts with it); absent where the bridge has none.
+  const K = typeof __qbtKey === 'string' ? __qbtKey : '';
   const cbs = {};
   const listeners = [];
   let seq = 0;
@@ -13,7 +15,7 @@ const chrome = (() => {
   window.__qbtEvent = (s) => { const m = JSON.parse(s); listeners.forEach((f) => f(m)); };
 
   const armed = () => (window.__qbtArmedUntil || 0) > Date.now();
-  const handOff = (url, filename) => { window.__qbtArmedUntil = 0; N.download(url, filename || ''); };
+  const handOff = (url, filename) => { window.__qbtArmedUntil = 0; N.download(K, url, filename || ''); };
   const isFile = (a) => a.hasAttribute('download') || a.href.startsWith('blob:') || /\.torrent(\?|$)/i.test(a.href);
   const grab = (a) => { if (!a.href || !armed() || !isFile(a)) return false; handOff(a.href, a.getAttribute('download')); return true; };
 
@@ -36,9 +38,9 @@ const chrome = (() => {
       const bytes = new Uint8Array(await blob.arrayBuffer());
       let bin = '';
       for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-      N.saveFile(name || 'fichier.torrent', btoa(bin), blob.type || 'application/x-bittorrent');
+      N.saveFile(K, name || 'fichier.torrent', btoa(bin), blob.type || 'application/x-bittorrent');
     } catch (e) {
-      N.toast('Téléchargement impossible : ' + e.message);
+      N.toast(K, 'Téléchargement impossible : ' + e.message);
     }
   };
 
@@ -67,7 +69,7 @@ const chrome = (() => {
       const r = await new Promise((resolve) => {
         const id = nextId('f');
         cbs[id] = resolve;
-        N.fetchBytes(abs, location.href, id);
+        N.fetchBytes(K, abs, location.href, id);
       });
       if (r.error) throw new Error('Téléchargement du .torrent impossible : ' + r.error);
       const bin = atob(r.base64);
@@ -91,7 +93,7 @@ const chrome = (() => {
             if (arming && !(reply && reply.ok)) window.__qbtArmedUntil = 0;
             resolve(reply);
           };
-          N.send(JSON.stringify(msg), id);
+          N.send(K, JSON.stringify(msg), id);
         });
         if (cb) p.then(cb);
         return p;
