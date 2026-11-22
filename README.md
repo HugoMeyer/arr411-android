@@ -83,7 +83,7 @@
 - **Dark, green interface** inspired by C411. The bottom bar hides while you type.
 - **Long-press** the Radarr, Sonarr, Lidarr or qBittorrent tab to jump to its settings.
 - **Diagnostic** (Settings → Diagnostic): a log of crashes, memory problems and the reasons why Android stopped the app, ready to copy or share. See [Diagnostics](#-diagnostics).
-- **Backup** (Settings → Sauvegarde des réglages): export your settings to a JSON file and import them on another device or after a reinstall. The default export leaves out passwords and API keys; the full export includes them, encrypted with a passphrase (AES-256-GCM). An import is checked and previewed before anything changes.
+- **Backup** (Settings → Sauvegarde des réglages): export your settings to a JSON file (**Enregistrer** saves it in your Downloads folder, **Copier** copies the text) and import them on another device or after a reinstall. The default export leaves out passwords and API keys; the full export includes them, encrypted with a passphrase (AES-256-GCM). An import is checked and previewed before anything changes.
 - **Updates** (Settings → Mises à jour): Arr411 looks for a new release on GitHub about every 6 hours, downloads it, checks its size and SHA-256, then installs it by itself when Android allows it, or tells you when it needs a tap. You can also choose to be notified only, or switch the check off. See [Updates](#-updates).
 
 ---

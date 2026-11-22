@@ -2,11 +2,18 @@ package dev.c411.qbittorrent;
 
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ContentResolver;
+import android.content.ContentValues;
 import android.content.Intent;
+import android.net.Uri;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.webkit.JavascriptInterface;
 
 import org.json.JSONObject;
 
+import java.io.IOException;
+import java.io.OutputStream;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -125,6 +132,43 @@ final class SpaBridge {
             ClipboardManager cm = act.getSystemService(ClipboardManager.class);
             if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("Arr411", text == null ? "" : text));
         });
+    }
+
+    /** Saves a settings file in the Downloads folder and toasts it; false when the name or the text is refused or the file cannot be written. */
+    @JavascriptInterface
+    public boolean saveText(String name, String text) {
+        byte[] bytes = SaveText.encode(name, text);
+        if (bytes == null) return false;
+        ContentResolver resolver = act.getContentResolver();
+        Uri file = null;
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+            values.put(MediaStore.MediaColumns.MIME_TYPE, "application/json");
+            values.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+            values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+            file = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (file == null) throw new IOException();
+            try (OutputStream out = resolver.openOutputStream(file, "w")) {
+                if (out == null) throw new IOException();
+                out.write(bytes);
+            }
+            values.clear();
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0);
+            if (resolver.update(file, values, null, null) < 1) throw new IOException();
+        } catch (Exception e) {
+            if (file != null) {
+                try {
+                    resolver.delete(file, null, null);
+                } catch (RuntimeException ignored) {
+                }
+            }
+            // Only the class of the error is logged: its message may hold the file name.
+            Diag.problem("saveText", "saving a settings file failed: " + e.getClass().getSimpleName(), null);
+            return false;
+        }
+        act.toast("Enregistré dans Téléchargements");
+        return true;
     }
 
     @JavascriptInterface

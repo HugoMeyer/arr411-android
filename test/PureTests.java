@@ -799,6 +799,46 @@ public class PureTests {
         check(longName.length() <= 120 && longName.endsWith(".torrent"), "a long name still ends with .torrent in 120 characters: " + longName.length());
     }
 
+    static void saveText() throws Exception {
+        String plain = "arr411-reglages-2026-11-22.json";
+        String encrypted = "arr411-reglages-2026-11-22-chiffre.json";
+        check(SaveText.validName(plain), "save: the name of a plain export");
+        check(SaveText.validName(encrypted), "save: the name of an encrypted export");
+        check(SaveText.validName("a".repeat(100) + ".json") && !SaveText.validName("a".repeat(101) + ".json"), "save: 100 characters before .json at most");
+        for (String bad : new String[]{"../x.json", "a/b.json", "a\\b.json", "x.txt", ".json", "-x.json", "a..b.json", "a b.json", "x.json\n", ""}) {
+            check(!SaveText.validName(bad), "save: refused name [" + bad.replace("\n", "\\n") + "]");
+        }
+        check(!SaveText.validName(null), "save: no name");
+
+        eq("{\"a\":1}", new String(SaveText.encode(plain, "{\"a\":1}"), StandardCharsets.UTF_8), "save: the text is what gets written");
+        String accents = "\u00e9\u20ac\uD83D\uDE00";
+        byte[] encoded = SaveText.encode(encrypted, accents);
+        check(encoded != null && encoded.length == 9 && accents.equals(new String(encoded, StandardCharsets.UTF_8)), "save: UTF-8 (2 + 3 + 4 bytes)");
+        check(SaveText.encode(plain, "a".repeat(1048576)) != null, "save: exactly 1 MiB is accepted");
+        check(SaveText.encode(plain, "a".repeat(1048577)) == null, "save: 1 MiB and a byte is refused");
+        check(SaveText.encode(plain, "\u00e9".repeat(524288)) != null, "save: 524288 two-byte characters make exactly 1 MiB");
+        check(SaveText.encode(plain, "\u00e9".repeat(524289)) == null, "save: the limit counts bytes, not characters");
+        check(SaveText.encode(plain, null) == null, "save: no text");
+        check(SaveText.encode("../x.json", "{}") == null && SaveText.encode(null, "{}") == null, "save: a refused name refuses the text too");
+
+        // The glue cannot run here: the page calls it by its signature, and what it is given must be checked before the storage is touched.
+        String dir = System.getProperty("arr411.src");
+        check(dir != null, "arr411.src is set (run test.ps1)");
+        if (dir == null) return;
+        String bridge = sourceText(new File(dir, "SpaBridge.java"));
+        Matcher m = Pattern.compile("@JavascriptInterface\\s+public\\s+boolean\\s+saveText\\(String name, String text\\)\\s*\\{").matcher(bridge);
+        boolean found = m.find();
+        check(found, "save: the page can call SpaBridge.saveText(name, text), which answers true or false");
+        if (!found) return;
+        int next = bridge.indexOf("@JavascriptInterface", m.end());
+        String body = bridge.substring(m.end(), next < 0 ? bridge.length() : next);
+        int checked = body.indexOf("SaveText.encode(name, text)");
+        int stored = body.indexOf("MediaStore.Downloads.EXTERNAL_CONTENT_URI");
+        check(checked >= 0 && stored > checked, "save: the name and the text are checked before anything is stored");
+        check(body.contains("resolver.delete(file"), "save: a file that could not be written is removed again");
+        check(Pattern.compile("Diag\\.problem\\(\"saveText\",[^;]*,\\s*null\\);").matcher(body).find(), "save: the log gets the class of the error, never its message");
+    }
+
     // ---------- Cookie jars ----------
 
     /** The header fields of a response, as HttpURLConnection.getHeaderFields() gives them (the status line has a null name). */
@@ -2339,6 +2379,7 @@ public class PureTests {
         lruThrottle();
         consoleBudget();
         fileNames();
+        saveText();
         cookieJars();
         bridgeKey();
         bridgeMethods();
