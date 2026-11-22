@@ -162,6 +162,7 @@
       let retryTimer = 0;
       const page = App.page({ title: '', back: true });
       page.itemId = id;
+      if (x) page.setName(x.title);
       App.append(page.actions,
         App.iconBtn('magnifying-glass', 'Chercher sur C411', () => M.searchC411(x)),
         App.iconBtn('ellipsis-vertical', 'Plus d’actions', () => x && detailsMenu()));
@@ -190,11 +191,12 @@
       function render() {
         if (gone) return;
         if (!x) return App.fill(scroll, App.loading());
+        page.setName(x.title);
         const keep = scroll.scrollTop;
         const st = M.status(x);
         const rating = U.ratingOf(x);
         const ov = x.overview ? h('p.overview.clamp', x.overview) : null;
-        if (ov) ov.addEventListener('click', () => ov.classList.toggle('clamp'));
+        if (ov) App.pressable(ov, () => ov.setAttribute('aria-expanded', ov.classList.toggle('clamp') ? 'false' : 'true'), { expanded: false });
         shownMon = anyMonitored();
         App.fill(scroll,
           h('div.hero', App.img(M.cover(x, 'fanart'))),
@@ -334,7 +336,7 @@
           focus = 0;
           setTimeout(() => {
             const el = albumsBox.querySelector('[data-album="' + f + '"]');
-            if (el && !gone) el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+            if (el && !gone) el.scrollIntoView({ block: 'start', behavior: App.scrollBehavior() });
           }, 60);
         }
       }
@@ -353,16 +355,22 @@
         const cover = M.poster(a, 250);
         const ph = cover.querySelector('.ph');
         if (ph) App.fill(ph, App.icon('musical-note'));
-        const head = h('div.season-h', { role: 'button', tabindex: '0' }, cover,
-          h('div.main', h('div.t', a.title + (a.disambiguation ? ' (' + a.disambiguation + ')' : '')), h('div.s', sub), App.bar(n.total ? n.have / n.total : 0, color)),
+        const open0 = open.has(a.id);
+        const main = h('div.main', { role: 'button', tabindex: '0', 'aria-expanded': open0 ? 'true' : 'false' },
+          h('div.t', a.title + (a.disambiguation ? ' (' + a.disambiguation + ')' : '')), h('div.s', sub), App.bar(n.total ? n.have / n.total : 0, color));
+        App.pressable(main);
+        // The header is not the button itself because the actions button sits inside it.
+        const head = h('div.season-h', cover, main,
           App.iconBtn('ellipsis-vertical', 'Actions de l’album', () => albumMenu(a)),
           h('span.chev', App.icon('chevron-down')));
         const body = h('div.season-b');
-        const wrap = h('div.season' + (open.has(a.id) ? '.open' : ''), { 'data-album': String(a.id) }, head, body);
-        if (open.has(a.id)) renderTracks(a, body);
+        App.pressableIn(body);
+        const wrap = h('div.season' + (open0 ? '.open' : ''), { 'data-album': String(a.id) }, head, body);
+        if (open0) renderTracks(a, body);
         head.addEventListener('click', () => {
           const on = !wrap.classList.contains('open');
           wrap.classList.toggle('open', on);
+          main.setAttribute('aria-expanded', on ? 'true' : 'false');
           if (on) {
             open.add(a.id);
             renderTracks(a, body);
@@ -422,7 +430,7 @@
         const raw = String(tr.trackNumber || '');
         const num = /^\d+$/.test(raw) ? U.pad(raw) : raw || U.pad(tr.absoluteTrackNumber);
         const sub = [fmtDur(tr.duration), f ? U.qualityName(f.quality) : '', f && f.size ? fmt.bytes(f.size) : '', tr.explicit ? 'explicite' : ''].filter(Boolean).join(' · ');
-        const ic = tr.hasFile ? U.colorIcon('check-circle', 'green') : U.ts(a.releaseDate) > Date.now() ? U.colorIcon('clock', 'blue') : U.colorIcon('minus-circle', 'amber');
+        const ic = tr.hasFile ? U.colorIcon('check-circle', 'green', 'Téléchargé') : U.ts(a.releaseDate) > Date.now() ? U.colorIcon('clock', 'blue', 'À venir') : U.colorIcon('minus-circle', 'amber', 'Manquant');
         const el = h('div.ep', { role: 'button', tabindex: '0' }, h('span.num', num), h('div.main', h('div.t', tr.title || 'Sans titre'), sub ? h('div.s', sub) : null), ic);
         el.addEventListener('click', () => trackMenu(a, tr, f));
         return el;
@@ -772,7 +780,7 @@
       page.isAdd = true;
       let kind = mode === 'album' || mode === 'artist' ? mode : App.pref('lidarr.addMode', 'artist') === 'album' ? 'album' : 'artist';
       const ph = () => (kind === 'album' ? 'Artiste et album, ou lien MusicBrainz…' : 'Nom de l’artiste ou lien MusicBrainz…');
-      const input = App.input({ type: 'search', placeholder: ph(), enterkeyhint: 'search' });
+      const input = App.input({ type: 'search', placeholder: ph(), ariaLabel: 'Rechercher un artiste ou un album', enterkeyhint: 'search' });
       const seg = App.seg([{ value: 'artist', label: 'Artiste' }, { value: 'album', label: 'Album' }], kind, (v) => setKind(v, true));
       seg.style.marginBottom = '8px';
       const box = h('div');
@@ -818,6 +826,7 @@
           results = e;
         }
         renderResults();
+        App.sayResults(results);
       }
       input.addEventListener('input', App.debounce(() => search(), 600));
       input.addEventListener('keydown', (e) => {
@@ -952,7 +961,11 @@
       if (needArtist) {
         if (alb) fields.push(App.note('L’artiste' + (r.artist && r.artist.title ? ' « ' + r.artist.title + ' »' : '') + ' n’est pas encore dans Lidarr : il sera ajouté avec ces réglages.', '', 'user-group'));
         fields.push(App.field('Dossier racine', rootSel), App.field('Profil de qualité', profSel));
-        if (metaSel) fields.push(h('div.field', h('label', 'Profil de métadonnées'), metaSel, metaHint));
+        if (metaSel) {
+          const lab = h('label', 'Profil de métadonnées');
+          App.tie(lab, metaSel, metaHint);
+          fields.push(h('div.field', lab, metaSel, metaHint));
+        }
         fields.push(App.field('Étiquettes', tags.el));
       } else {
         fields.push(App.note('Artiste déjà suivi : l’album sera rattaché à « ' + known.title + ' » avec ses réglages actuels.', '', 'user-group'));

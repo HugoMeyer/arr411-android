@@ -30,8 +30,10 @@
     const eye = App.iconBtn('eye', 'Afficher', () => {
       const show = inp.type === 'password';
       inp.type = show ? 'text' : 'password';
+      eye.setAttribute('aria-pressed', show ? 'true' : 'false');
       App.fill(eye, App.icon(show ? 'eye-slash' : 'eye'));
     });
+    eye.setAttribute('aria-pressed', 'false');
     const row = h('div.pw', inp, eye);
     row.input = inp;
     return row;
@@ -103,7 +105,7 @@
     const url = App.input({ type: 'url', inputmode: 'url', placeholder: 'https://qbittorrent.exemple.fr' });
     const user = App.input({ placeholder: 'admin' });
     const pass = secret('Mot de passe');
-    const status = h('div');
+    const status = h('div', { role: 'status' });
     const F = form([
       { el: url, key: 'qbUrl', get: () => App.cleanUrl(url.value) },
       { el: user, key: 'username', get: () => user.value.trim() },
@@ -141,7 +143,7 @@
     const name = App.arrName(svc);
     const url = App.input({ type: 'url', inputmode: 'url', placeholder: 'https://' + svc + '.exemple.fr' });
     const key = secret('32 caractères');
-    const status = h('div');
+    const status = h('div', { role: 'status' });
     const F = form([
       { el: url, key: svc + 'Url', get: () => App.cleanUrl(url.value) },
       { el: key.input, key: svc + 'Key', get: () => key.input.value.trim() }
@@ -416,8 +418,10 @@
     }
     refreshers.push(sync);
     sync();
+    const presetLab = h('label', 'Profil de score');
+    App.tie(presetLab, sel, hint);
     return card('score', 'chart-bar', 'Score des torrents',
-      h('div.field', h('label', 'Profil de score'), sel, hint),
+      h('div.field', presetLab, sel, hint),
       weights,
       h('div.hint', 'S’applique aux badges de score sur c411.org (recharge la page si elle est ouverte).')
     );
@@ -620,6 +624,8 @@
       showMode();
     });
 
+    const modeLab = h('label', 'Mise à jour automatique');
+    App.tie(modeLab, select, modeHint);
     ui.root = card('update', 'arrow-down-tray', 'Mises à jour',
       h('dl.kv', h('dt', 'Version actuelle'), ui.cur, h('dt', 'Dernière version'), ui.last),
       ui.when,
@@ -627,7 +633,7 @@
       ui.foldBox,
       h('div.btn-row', ui.install, ui.page, ui.check),
       h('div.set-sep'),
-      h('div.field', h('label', 'Mise à jour automatique'), select, modeHint)
+      h('div.field', modeLab, select, modeHint)
     );
     ui.root.firstChild.appendChild(ui.badge);
     updUi = ui;

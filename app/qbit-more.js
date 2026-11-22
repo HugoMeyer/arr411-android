@@ -231,7 +231,7 @@
             { value: '-1', label: 'Aucune limite' },
             { value: 'v', label: 'Personnalisée' }
           ], val == null || val === -2 ? '-2' : val === -1 ? '-1' : 'v');
-          const inp = App.input({ type: 'number', inputmode: isFloat ? 'decimal' : 'numeric', step: isFloat ? '0.01' : '1', placeholder: unit, value: val >= 0 ? String(val) : '' });
+          const inp = App.input({ type: 'number', inputmode: isFloat ? 'decimal' : 'numeric', step: isFloat ? '0.01' : '1', placeholder: unit, ariaLabel: label + ' : valeur personnalisée', value: val >= 0 ? String(val) : '' });
           const inpBox = h('div', { style: { flex: '1', minWidth: '0' } }, inp);
           const upd = () => inpBox.classList.toggle('hidden', mode.value !== 'v');
           mode.addEventListener('change', upd);
@@ -310,6 +310,7 @@
       const rootEl = h('p.muted.wrap.hidden', { style: { margin: '-2px 4px 10px', fontSize: '12px' } });
       const status = h('div', App.loading());
       const grp = h('div.group.hidden');
+      App.pressableIn(grp);
       App.append(el, h('div.section-title', titleTxt, h('span.grow'), linkBtn('Tout…', allMenu)), rootEl, status, grp);
       const frows = new Map();
       let files = [];
@@ -360,7 +361,7 @@
         r.fn = h('div.fn');
         r.bar = App.bar(0);
         r.meta = h('div.meta');
-        r.el = h('div.file', r.cb, h('div.main', r.dir, r.fn, r.bar, r.meta));
+        r.el = h('div.file', r.cb, h('div.main', { role: 'button', tabindex: '0' }, r.dir, r.fn, r.bar, r.meta));
         r.el.addEventListener('click', () => fileMenu(r.f));
         return r;
       }
@@ -381,6 +382,7 @@
           const short = f.name.slice(root.length);
           const slash = short.lastIndexOf('/');
           f.base = short.slice(slash + 1);
+          r.cb.setAttribute('aria-label', 'Télécharger ' + f.base);
           r.dir.textContent = slash >= 0 ? short.slice(0, slash) : '';
           r.fn.textContent = f.base;
           r.bar.set(f.progress);
@@ -482,6 +484,7 @@
         if (!pseudo) {
           r.style.cursor = 'pointer';
           r.addEventListener('click', () => trackerMenu(tr));
+          App.pressable(r);
         }
         return r;
       }
@@ -494,7 +497,10 @@
           if (s === sig) return;
           sig = s;
           grp.classList.toggle('hidden', !list.length);
+          // The rows are rebuilt: a keyboard user keeps their place.
+          const restoreFocus = App.keepPlace(grp);
           App.fill(grp, list.map(row));
+          restoreFocus();
         },
         fail(e) {
           if (!sig) App.fill(status, App.note(e.message, 'err'));
@@ -508,6 +514,7 @@
       const titleTxt = h('span', 'Pairs');
       const status = h('div', App.loading());
       const grp = h('div.group.hidden');
+      App.pressableIn(grp);
       App.append(el, h('div.section-title', titleTxt, h('span.grow'), linkBtn('Ajouter', addPeers)), status, grp);
       let rid = 0;
       let peers = Object.create(null);
@@ -550,6 +557,7 @@
         titleTxt.textContent = keys.length ? fmt.plural(keys.length, 'pair connecté', 'pairs connectés') : 'Pairs';
         App.fill(status, keys.length ? null : App.empty('users', 'Aucun pair connecté', 'Les pairs apparaissent ici quand qBittorrent échange des données.'));
         grp.classList.toggle('hidden', !keys.length);
+        const restoreFocus = App.holdFocus(grp);
         prow.forEach((r, k) => {
           if (!peers[k]) {
             r.el.remove();
@@ -562,7 +570,7 @@
           let r = prow.get(k);
           if (!r) {
             r = { flag: h('span.peer-flag'), t: h('div.mono', { style: { fontSize: '12.5px', fontWeight: '600' } }), s: h('div.s'), sp: h('div', { style: { fontSize: '11.5px', textAlign: 'right', flex: 'none' } }) };
-            r.el = h('div.q-row', { style: { cursor: 'pointer' } }, r.flag, h('div.main', r.t, r.s), r.sp);
+            r.el = h('div.q-row', { style: { cursor: 'pointer' }, role: 'button', tabindex: '0' }, r.flag, h('div.main', r.t, r.s), r.sp);
             r.el.addEventListener('click', () => peerMenu(k, peers[k] || {}));
             prow.set(k, r);
           }
@@ -577,6 +585,7 @@
           frag.appendChild(r.el);
         });
         grp.appendChild(frag);
+        restoreFocus();
       }
       return {
         el: el,

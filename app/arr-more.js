@@ -458,7 +458,7 @@
         },
         onShow: show,
         top() {
-          el.scrollTo({ top: 0, behavior: 'smooth' });
+          el.scrollTo({ top: 0, behavior: App.scrollBehavior() });
         }
       };
     }
@@ -648,7 +648,7 @@
           if (!cal.data || cal.data instanceof Error || Date.now() - cal.at > 300000) load();
         },
         top() {
-          el.scrollTo({ top: 0, behavior: 'smooth' });
+          el.scrollTo({ top: 0, behavior: App.scrollBehavior() });
         }
       };
     }
@@ -707,7 +707,7 @@
           const f = 1 - k.freeSpace / k.totalSpace;
           return h('div.disk',
             h('div.row1', h('span.nowrap', e.roots.length ? e.roots.join(', ') : k.label || k.path), h('span.dim', { style: { flex: 'none' } }, fmt.bytes(k.freeSpace) + ' libres / ' + fmt.bytes(k.totalSpace))),
-            App.bar(f, f > 0.92 ? 'var(--red)' : f > 0.8 ? 'var(--amber)' : null));
+            App.bar(f, f > 0.92 ? 'var(--red)' : f > 0.8 ? 'var(--amber)' : null, 'Espace utilisé'));
         });
       }
       function healthNote(x) {
@@ -716,7 +716,7 @@
         const wiki = typeof x.wikiUrl === 'string' ? x.wikiUrl : x.wikiUrl && (x.wikiUrl.fullUri || x.wikiUrl.uri);
         if (wiki) {
           n.lastChild.appendChild(h('div', { style: { marginTop: '4px', fontWeight: '650', textDecoration: 'underline' } }, 'En savoir plus'));
-          n.addEventListener('click', () => App.openExternal(wiki));
+          App.pressable(n, () => App.openExternal(wiki));
         }
         return n;
       }
@@ -787,7 +787,7 @@
           if (!sys.data || sys.data instanceof Error || Date.now() - sys.at > 60000) load();
         },
         top() {
-          el.scrollTo({ top: 0, behavior: 'smooth' });
+          el.scrollTo({ top: 0, behavior: App.scrollBehavior() });
         }
       };
     }
@@ -986,6 +986,7 @@
       const cfBox = fi.length
         ? h('div.group', fi.map((f) => {
           const inp = numInput(f.score);
+          inp.setAttribute('aria-label', 'Score : ' + f.name);
           fmtInputs.push([f, inp]);
           return h('div.item', { style: { padding: '8px 14px' } }, h('div.main', h('div.t.nowrap', f.name)), inp);
         }))
@@ -1185,7 +1186,7 @@
       render();
     }
     function lookupFor(f, r, onDone) {
-      const input = App.input({ type: 'search', value: folderTerm(f.name), enterkeyhint: 'search' });
+      const input = App.input({ type: 'search', value: folderTerm(f.name), ariaLabel: 'Rechercher ' + M.one, enterkeyhint: 'search' });
       const res = h('div');
       let seq = 0;
       const s = App.sheet({ title: f.name, full: true, body: [h('div.search', App.icon('magnifying-glass'), input), h('div', { style: { height: '12px' } }), res] });
@@ -1197,6 +1198,7 @@
         try {
           const list = await M.api().get(M.ep + '/lookup', { term: term });
           if (my !== seq) return;
+          App.sayResults(list ? Math.min(list.length, 20) : 0);
           if (!list || !list.length) {
             return App.fill(res, App.empty('magnifying-glass', 'Aucun résultat', 'Modifie la recherche : titre, année, imdb:tt…' + (isR ? ', tmdb:…' : ', tvdb:…')));
           }
@@ -1584,8 +1586,11 @@
       return new Promise((resolve) => {
         let done = false;
         const fk = nk(isL ? [(f.audioTags || {}).artistTitle, f.path || f.name].filter(Boolean).join(' ') : f.relativePath || f.name || f.path);
-        const inp = App.input({ type: 'search', placeholder: 'Rechercher dans la bibliothèque', enterkeyhint: 'search' });
+        const inp = App.input({ type: 'search', placeholder: 'Rechercher dans la bibliothèque', ariaLabel: 'Rechercher dans la bibliothèque', enterkeyhint: 'search' });
         const list = h('div.group');
+        let found = 0;
+        // Announced once typing pauses, so a screen reader is not flooded while a word is being typed.
+        const sayFound = App.debounce(() => App.sayResults(found), 800);
         const all = (M.cache.items || []).map((x) => ({ x: x, k: titlesOf(x).map(nk).join(' | ') + ' ' + (x.year || ''), score: scoreOf(x, fk) }));
         const s = App.sheet({
           title: isR ? 'Quel film ?' : isL ? 'Quel artiste ?' : 'Quelle série ?',
@@ -1600,6 +1605,7 @@
           const q = nk(inp.value);
           let res = q ? all.filter((e) => e.k.indexOf(q) >= 0) : all.filter((e) => e.score > 0);
           res = res.sort((a, b) => b.score - a.score || coll(a.x.sortTitle || a.x.title || '', b.x.sortTitle || b.x.title || '')).slice(0, 40);
+          found = res.length;
           if (!res.length) {
             return App.fill(list, h('div.item', App.icon('magnifying-glass'), h('div.main', h('div.s', q ? 'Aucun résultat dans la bibliothèque' : 'Aucune correspondance évidente : tape un titre'))));
           }
@@ -1616,7 +1622,10 @@
             return b;
           }));
         }
-        inp.addEventListener('input', App.debounce(render, 150));
+        inp.addEventListener('input', App.debounce(() => {
+          render();
+          sayFound();
+        }, 150));
         render();
       });
     }
@@ -1667,7 +1676,8 @@
           })));
           const open = list.some((e) => sel.has(e.id)) || (!sel.size && (sn === fileSeason || nums.length === 1));
           const wrap = h('div.group.season' + (open ? '.open' : ''), head, body);
-          head.addEventListener('click', () => wrap.classList.toggle('open'));
+          head.setAttribute('aria-expanded', open ? 'true' : 'false');
+          head.addEventListener('click', () => head.setAttribute('aria-expanded', wrap.classList.toggle('open') ? 'true' : 'false'));
           count();
           return wrap;
         });
@@ -1939,7 +1949,7 @@
       }
       function fileRow(st) {
         const f = st.f;
-        const cb = h('input.cb', { type: 'checkbox', checked: st.sel });
+        const cb = h('input.cb', { type: 'checkbox', checked: st.sel, 'aria-label': 'Importer ' + (f.relativePath || f.name || U.baseName(f.path)) });
         cb.addEventListener('change', () => {
           if (cb.checked && !ready(st)) {
             cb.checked = false;

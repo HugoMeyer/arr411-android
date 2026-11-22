@@ -374,6 +374,115 @@
   }
   App.icon = icon;
 
+  // ---------- Accessibility helpers ----------
+  let uid = 0;
+  const uniqueId = (prefix) => 'a11y-' + prefix + ++uid;
+
+  // A non-button element that acts like one: Enter activates on keydown and Space on keyup, as for a real button.
+  // Only a key pressed on the element itself counts, so typing in a control nested inside it still works.
+  function pressKey(e, el, down) {
+    if (e.target !== el || e.ctrlKey || e.metaKey || e.altKey) return;
+    const enter = e.key === 'Enter';
+    if (!enter && e.key !== ' ' && e.key !== 'Spacebar') return;
+    e.preventDefault(); // Space would scroll the page
+    if (enter ? down && !e.repeat : !down) el.click();
+  }
+  // o: { label (aria-label), expanded (initial aria-expanded), pressed (initial aria-pressed) }. fn is the click handler, if the element has none yet.
+  App.pressable = function (el, fn, o) {
+    o = o || {};
+    el.setAttribute('role', 'button');
+    el.setAttribute('tabindex', '0');
+    if (o.label) el.setAttribute('aria-label', o.label);
+    if (o.expanded != null) el.setAttribute('aria-expanded', o.expanded ? 'true' : 'false');
+    if (o.pressed != null) el.setAttribute('aria-pressed', o.pressed ? 'true' : 'false');
+    if (fn) el.addEventListener('click', fn);
+    el.addEventListener('keydown', (e) => pressKey(e, el, true));
+    el.addEventListener('keyup', (e) => pressKey(e, el, false));
+    return el;
+  };
+  // Same for a long list, with one pair of listeners instead of one per row: the rows only carry role="button" and tabindex="0".
+  App.pressableIn = function (container) {
+    const on = (down) => (e) => {
+      const el = e.target;
+      if (el && el !== container && el.getAttribute && el.getAttribute('role') === 'button') pressKey(e, el, down);
+    };
+    container.addEventListener('keydown', on(true));
+    container.addEventListener('keyup', on(false));
+    return container;
+  };
+
+  // Scrolling by code is motion too: with "remove animations" (prefers-reduced-motion) it jumps, the CSS rule alone cannot tell it to.
+  App.scrollBehavior = () => (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
+
+  // ---- Keyboard focus ----
+  // On a touch screen a text field that takes focus opens the soft keyboard, so focus is never moved into one on its own there.
+  const coarse = () => !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+  function isTextEntry(el) {
+    return el.localName === 'textarea' || (el.localName === 'input' && /^(text|search|email|url|tel|password|number)$/i.test(el.getAttribute('type') || 'text'));
+  }
+  function canFocus(el) {
+    const tag = el.localName;
+    if (!tag || el.disabled) return false;
+    const ti = el.getAttribute('tabindex');
+    if (ti != null && ti !== '' && +ti < 0) return false;
+    if (tag === 'input') return el.getAttribute('type') !== 'hidden';
+    if (tag === 'button' || tag === 'select' || tag === 'textarea') return true;
+    if (tag === 'a') return el.getAttribute('href') != null;
+    return ti != null && ti !== '';
+  }
+  // Rendered and not visibility:hidden (checkVisibility is missing from older WebViews, hence the fallback).
+  const shown = (el) =>
+    typeof el.checkVisibility === 'function'
+      ? el.checkVisibility({ checkVisibilityCSS: true, visibilityProperty: true })
+      : typeof el.getClientRects !== 'function' || el.getClientRects().length > 0;
+  // First (or last, in document order) element below `root` that the keyboard can reach.
+  function edge(root, last, noText) {
+    const kids = root.children;
+    const n = kids ? kids.length : 0;
+    const ok = (c) => canFocus(c) && shown(c) && !(noText && isTextEntry(c));
+    for (let k = 0; k < n; k++) {
+      const c = kids[last ? n - 1 - k : k];
+      if (!last && ok(c)) return c;
+      const d = edge(c, last, noText);
+      if (d) return d;
+      if (last && ok(c)) return c;
+    }
+    return null;
+  }
+  function focusEl(el) {
+    if (!el || typeof el.focus !== 'function') return false;
+    try {
+      el.focus({ preventScroll: true });
+    } catch (e) {
+      return false;
+    }
+    return document.activeElement === el;
+  }
+  const nothingFocused = () => !document.activeElement || document.activeElement === document.body || document.activeElement === document.documentElement;
+  // The title is how a page is announced when it opens. It takes focus from script only, never from Tab.
+  function focusTitle(page) {
+    const el = page && (page.titleEl || page.el);
+    if (!el) return false;
+    if (el.getAttribute('tabindex') == null) el.setAttribute('tabindex', '-1');
+    return focusEl(el);
+  }
+  // Re-sorted rows leave the document for a moment, which drops keyboard focus: the returned function hands it back to the same element.
+  App.holdFocus = function (root) {
+    const a = document.activeElement;
+    const keep = a && a !== document.body && root.contains(a) ? a : null;
+    return () => {
+      if (keep && document.activeElement !== keep) focusEl(keep);
+    };
+  };
+  // Same for a list rebuilt from scratch: focus goes back to whatever now sits at the same position.
+  App.keepPlace = function (container) {
+    const at = Array.prototype.indexOf.call(container.children, document.activeElement);
+    return () => {
+      const el = at >= 0 ? container.children[at] : null;
+      if (el && document.activeElement !== el) focusEl(el);
+    };
+  };
+
   App.run = function (fn, btn) {
     let r;
     try {
@@ -393,7 +502,9 @@
   App.btn = function (label, o) {
     o = o || {};
     const cls = o.cls ? '.' + o.cls.trim().split(/\s+/).join('.') : '';
-    const b = h('button.btn' + cls, { type: 'button', disabled: !!o.disabled, title: o.title }, o.icon ? icon(o.icon) : null, label != null && label !== '' ? h('span', label) : null);
+    const named = label != null && label !== '';
+    // An icon-only button has no text to be named from.
+    const b = h('button.btn' + cls, { type: 'button', disabled: !!o.disabled, title: o.title, 'aria-label': o.ariaLabel || (named ? null : o.title) }, o.icon ? icon(o.icon) : null, named ? h('span', label) : null);
     if (o.onClick) {
       b.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -418,7 +529,10 @@
     return b;
   };
   App.input = function (o) {
-    return h('input.input', Object.assign({ type: 'text', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' }, o || {}));
+    o = Object.assign({ type: 'text', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' }, o || {});
+    if (o.ariaLabel) o['aria-label'] = o.ariaLabel;
+    delete o.ariaLabel;
+    return h('input.input', o);
   };
   App.select = function (options, value, o) {
     const s = h('select.input', o || {});
@@ -427,13 +541,56 @@
     if (s.selectedIndex < 0 && s.options.length) s.selectedIndex = 0;
     return s;
   };
-  App.field = function (label, input, hint) {
-    return h('div.field', label ? h('label', label) : null, input, hint ? h('div.hint', hint) : null);
+  // The control a label stands for: the element itself or, for a wrapper, the first input, select or textarea inside it.
+  function controlOf(el) {
+    if (!el || el.localName === undefined) return null;
+    const tag = el.localName;
+    if (tag === 'select' || tag === 'textarea') return el;
+    if (tag === 'input') return el.getAttribute('type') === 'hidden' ? null : el;
+    const kids = el.children || [];
+    for (let i = 0; i < kids.length; i++) {
+      const c = controlOf(kids[i]);
+      if (c) return c;
+    }
+    return null;
+  }
+  // Ties a label (and a hint) to its control. App.field does it for the usual markup; a field built by hand calls it directly.
+  App.tie = function (lab, ctl, hintEl) {
+    if (!ctl.id) ctl.id = uniqueId('f');
+    if (lab) lab.setAttribute('for', ctl.id);
+    if (hintEl) {
+      if (!hintEl.id) hintEl.id = uniqueId('h');
+      const prev = ctl.getAttribute('aria-describedby');
+      ctl.setAttribute('aria-describedby', prev ? prev + ' ' + hintEl.id : hintEl.id);
+    }
   };
+  // Ties the label (and the hint) to the control. A field without a single control, such as a list of chips, becomes a named group.
+  App.field = function (label, input, hint) {
+    const lab = label ? h('label', label) : null;
+    const hintEl = hint ? h('div.hint', hint) : null;
+    const f = h('div.field', lab, input, hintEl);
+    const ctl = controlOf(input);
+    if (ctl) App.tie(lab, ctl, hintEl);
+    else if (lab) {
+      lab.id = uniqueId('l');
+      f.setAttribute('role', 'group');
+      f.setAttribute('aria-labelledby', lab.id);
+    }
+    return f;
+  };
+  // The label is read as the name and the sub-text as the description, not both as one long name. label.switch and .lbl > span stay as they are (Desktop hides a switch by its caption).
   App.switchEl = function (label, checked, onChange, sub) {
-    const inp = h('input', { type: 'checkbox', checked: !!checked });
+    const inp = h('input', { type: 'checkbox', role: 'switch', checked: !!checked });
     if (onChange) inp.addEventListener('change', () => App.run(() => onChange(inp.checked, inp)));
-    const el = h('label.switch', h('span.lbl', h('span', label), sub ? h('span.sub', sub) : null), inp);
+    const capId = uniqueId('s');
+    inp.setAttribute('aria-labelledby', capId);
+    let subEl = null;
+    if (sub) {
+      const subId = uniqueId('d');
+      subEl = h('span.sub#' + subId, sub);
+      inp.setAttribute('aria-describedby', subId);
+    }
+    const el = h('label.switch', h('span.lbl', h('span#' + capId, label), subEl), inp);
     el.input = inp;
     return el;
   };
@@ -442,6 +599,13 @@
     if (onChange) inp.addEventListener('change', () => onChange(inp.checked));
     const el = h('label.check-row', inp, h('span', label));
     el.input = inp;
+    return el;
+  };
+  // The selected look of a chip or segment and its aria-pressed always change together.
+  App.setOn = function (el, on) {
+    el.classList.toggle('on', !!on);
+    const v = on ? 'true' : 'false';
+    if (el.getAttribute('aria-pressed') !== v) el.setAttribute('aria-pressed', v);
     return el;
   };
   App.seg = function (items, value, onChange) {
@@ -458,7 +622,7 @@
     });
     function set(v) {
       el.value = v;
-      items.forEach((it, i) => btns[i].classList.toggle('on', it.value === v));
+      items.forEach((it, i) => App.setOn(btns[i], it.value === v));
     }
     set(value);
     el.set = set;
@@ -467,12 +631,25 @@
   App.badge = function (text, color, ic) {
     return h('span.badge' + (color ? '.' + color : ''), ic ? icon(ic) : null, text);
   };
-  App.bar = function (frac, color) {
-    const i = h('i', { style: { width: Math.max(0, Math.min(100, (frac || 0) * 100)).toFixed(1) + '%' } });
+  // With a label the bar is a progressbar of its own. Without one it only repeats a figure written next to it, so screen readers skip it.
+  App.bar = function (frac, color, label) {
+    const pct = (f) => Math.max(0, Math.min(100, (f || 0) * 100));
+    const i = h('i', { style: { width: pct(frac).toFixed(1) + '%' } });
     const el = h('div.bar', i);
     if (color) el.style.setProperty('--c', color);
+    if (label) {
+      el.setAttribute('role', 'progressbar');
+      el.setAttribute('aria-valuemin', '0');
+      el.setAttribute('aria-valuemax', '100');
+      el.setAttribute('aria-valuenow', String(Math.round(pct(frac))));
+      el.setAttribute('aria-label', label);
+    } else {
+      el.setAttribute('aria-hidden', 'true');
+    }
     el.set = (f) => {
-      i.style.width = Math.max(0, Math.min(100, (f || 0) * 100)).toFixed(1) + '%';
+      const p = pct(f);
+      i.style.width = p.toFixed(1) + '%';
+      if (label) el.setAttribute('aria-valuenow', String(Math.round(p)));
     };
     return el;
   };
@@ -481,7 +658,7 @@
   };
   App.loading = () => h('div.loading', h('div.spin'));
   App.secTitle = function (text, right) {
-    return h('div.section-title', h('span', text), h('span.grow'), right || null);
+    return h('div.section-title', h('span', { role: 'heading', 'aria-level': '2' }, text), h('span.grow'), right || null);
   };
   App.kv = function (pairs) {
     const dl = h('dl.kv');
@@ -619,10 +796,39 @@
   App.sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ---------- Toasts & errors ----------
+  // A toast is brief and visual. Screen readers get its text once, from a live region that outlives it, so the toast itself is hidden from them.
+  // The region is created when the page does not carry it. Texts are queued: two toasts in the same tick must both be read, and clearing
+  // the region before filling it makes a repeated message sound again.
+  const live = { alert: { q: [], n: 0 }, status: { q: [], n: 0 } };
+  function liveRegion(urgent) {
+    const id = urgent ? 'sr-alert' : 'sr-status';
+    let el = document.getElementById(id);
+    if (!el && document.body) {
+      el = h('div#' + id + '.sr-only', { role: urgent ? 'alert' : 'status', 'aria-live': urgent ? 'assertive' : 'polite', 'aria-atomic': 'true' });
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+  function announce(msg, urgent) {
+    const el = liveRegion(urgent);
+    if (!el) return;
+    const st = live[urgent ? 'alert' : 'status'];
+    st.q.push(String(msg));
+    if (st.q.length > 1) return;
+    el.textContent = '';
+    setTimeout(() => {
+      el.textContent = st.q.splice(0).join('. ');
+      const n = ++st.n;
+      setTimeout(() => {
+        if (n === st.n) el.textContent = '';
+      }, 7000);
+    }, 0);
+  }
   App.toast = function (msg, type) {
+    announce(msg, type === 'err');
     const box = document.getElementById('toasts');
     if (!box) return;
-    const el = h('div.toast' + (type ? '.' + type : ''), icon(type === 'err' ? 'exclamation-triangle' : type === 'ok' ? 'check-circle' : 'information-circle'), h('span', String(msg)));
+    const el = h('div.toast' + (type ? '.' + type : ''), { 'aria-hidden': 'true' }, icon(type === 'err' ? 'exclamation-triangle' : type === 'ok' ? 'check-circle' : 'information-circle'), h('span', String(msg)));
     box.appendChild(el);
     while (box.children.length > 3) box.removeChild(box.firstChild);
     el.getBoundingClientRect();
@@ -637,15 +843,87 @@
     console.error(e);
     App.toast(e.message || String(e), 'err');
   };
+  // The outcome of a search (a count, or the Error it ended with) is already on screen: screen readers get it too, with no toast.
+  App.sayResults = (r) => {
+    if (r instanceof Error) return announce(r.message, true);
+    const n = typeof r === 'number' ? r : r ? r.length : 0;
+    announce(n ? fmt.plural(n, 'résultat') : 'Aucun résultat', false);
+  };
 
   // ---------- Overlays ----------
   const overlays = [];
+  const entryOf = new WeakMap(); // .overlay element -> its entry
+  const topEntry = () => {
+    for (let i = overlays.length - 1; i >= 0; i--) if (overlays[i].tab === App.state.tab) return overlays[i];
+    return null;
+  };
+  // While a dialog is open, what lies behind it is out of reach of keyboard, pointer and screen reader. This is computed from the stack on every
+  // change, so a closed dialog, closeOverlays() or a tab switch can never leave the page inert.
+  function syncModal() {
+    const top = topEntry();
+    const tabs = document.getElementById('tabs');
+    if (tabs && !!tabs.inert !== !!top) tabs.inert = !!top;
+    for (const e of overlays) if (!!e.ov.inert !== (e !== top)) e.ov.inert = e !== top;
+  }
+  // Keyboard focus goes back to the control that opened the dialog or, failing that, to the title of the page underneath. It never throws.
+  function restoreFocus(entry) {
+    try {
+      if (entry.tab !== App.state.tab) return;
+      if (!nothingFocused() && !entry.ov.contains(document.activeElement)) return; // focus has already moved on
+      let t = entry.opener;
+      // The opener may sit in a dialog that closed along with this one (closeOverlays): go back to where that one came from.
+      for (let i = 0; i < 8 && t; i++) {
+        let up = t;
+        let e;
+        while (up && !(e = entryOf.get(up))) up = up.parentNode;
+        if (!e || !e.closed) break;
+        t = e.opener;
+      }
+      if (t && !(coarse() && isTextEntry(t)) && focusEl(t)) return;
+      const tab = App.tabs[App.state.tab];
+      focusTitle(tab && tab.stack[tab.stack.length - 1]);
+    } catch (e) {
+      // Focus is a courtesy: closing the dialog must not depend on it.
+    }
+  }
+  function focusInitial(entry, o) {
+    let t = typeof o.initialFocus === 'function' ? o.initialFocus() : o.initialFocus;
+    if (t === 'dialog') t = entry.dlg;
+    if (!focusEl(t)) focusEl(edge(entry.dlg, false, coarse()) || entry.dlg);
+  }
+  // One document-level listener, installed with the first dialog: Escape closes the top dialog of the visible tab and Tab stays inside it.
+  let keysOn = false;
+  function onKey(e) {
+    if (e.defaultPrevented) return;
+    const top = topEntry();
+    if (!top) return;
+    if (e.key === 'Escape') {
+      if (top.dismiss && !e.isComposing) {
+        e.preventDefault();
+        top.close();
+      }
+    } else if (e.key === 'Tab' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      const first = edge(top.dlg, false);
+      const last = edge(top.dlg, true);
+      const act = document.activeElement;
+      if (!first) {
+        e.preventDefault();
+        focusEl(top.dlg);
+      } else if (!act || !top.dlg.contains(act) || (e.shiftKey ? act === first || act === top.dlg : act === last)) {
+        e.preventDefault();
+        focusEl(e.shiftKey ? last : first);
+      }
+    }
+  }
+  // o: { onClose, dismiss (false: neither backdrop nor Escape closes it), initialFocus (element, function returning one, or 'dialog') }.
   function openOverlay(content, o) {
     o = o || {};
+    const opener = nothingFocused() ? null : document.activeElement;
     const backdrop = h('div.backdrop');
     const ov = h('div.overlay', backdrop, content);
     document.getElementById('overlays').appendChild(ov);
-    const entry = { ov: ov, tab: App.state.tab, closed: false };
+    const entry = { ov: ov, dlg: content, tab: App.state.tab, closed: false, dismiss: o.dismiss !== false, opener: opener };
+    entryOf.set(ov, entry);
     entry.close = function () {
       if (entry.closed) return;
       entry.closed = true;
@@ -653,7 +931,10 @@
       if (i >= 0) overlays.splice(i, 1);
       ov.classList.remove('open');
       ov.style.pointerEvents = 'none';
+      ov.inert = true;
       setTimeout(() => ov.remove(), 260);
+      syncModal();
+      restoreFocus(entry);
       if (o.onClose) {
         try {
           o.onClose();
@@ -662,10 +943,16 @@
         }
       }
     };
-    if (o.dismiss !== false) backdrop.addEventListener('click', () => entry.close());
+    if (entry.dismiss) backdrop.addEventListener('click', () => entry.close());
     overlays.push(entry);
+    syncModal();
     ov.getBoundingClientRect();
     ov.classList.add('open');
+    if (!keysOn && document.addEventListener) {
+      keysOn = true;
+      document.addEventListener('keydown', onKey);
+    }
+    focusInitial(entry, o);
     return entry;
   }
   App.closeOverlays = function () {
@@ -674,27 +961,51 @@
 
   App.sheet = function (o) {
     o = o || {};
-    const titleEl = h('h3', o.title || '');
+    const titleEl = h('h3#' + uniqueId('t'), { 'aria-level': '2' }, o.title || '');
     const body = h('div.sheet-body');
     const actions = o.actions ? h('div.sheet-actions') : null;
     let s;
     const closeBtn = App.iconBtn('x-mark', 'Fermer', () => s.close());
-    const el = h('div.sheet' + (o.full ? '.full' : '') + (o.cls ? '.' + o.cls : ''), h('div.grip'), h('div.sheet-head', titleEl, o.headActions || null, closeBtn), body, actions);
+    // A modal dialog named by its title. Without a title, it is named by o.ariaLabel and the empty heading is hidden.
+    const el = h(
+      'div.sheet' + (o.full ? '.full' : '') + (o.cls ? '.' + o.cls : ''),
+      { role: 'dialog', 'aria-modal': 'true', tabindex: '-1' },
+      h('div.grip'),
+      h('div.sheet-head', titleEl, o.headActions || null, closeBtn),
+      body,
+      actions
+    );
+    const name = (t) => {
+      if (t) {
+        el.setAttribute('aria-labelledby', titleEl.id);
+        el.removeAttribute('aria-label');
+        titleEl.removeAttribute('aria-hidden');
+      } else {
+        el.removeAttribute('aria-labelledby');
+        el.setAttribute('aria-label', o.ariaLabel || 'Fenêtre');
+        titleEl.setAttribute('aria-hidden', 'true');
+      }
+    };
+    name(o.title);
     if (o.body) appendKids(body, [o.body]);
     if (actions) appendKids(actions, [o.actions]);
-    s = openOverlay(el, o);
+    // Focus starts on the first control of the content, else of the actions, else on the close button.
+    const first = () => edge(body, false, coarse()) || (actions && edge(actions, false)) || closeBtn;
+    s = openOverlay(el, Object.assign({}, o, { initialFocus: o.initialFocus || first }));
     s.el = el;
     s.body = body;
     s.actionsEl = actions;
     s.setTitle = (t) => {
       titleEl.textContent = t;
+      name(t);
     };
     return s;
   };
 
   App.menu = function (o) {
     const m = h('div.menu');
-    const s = App.sheet({ title: o.title, body: m, onClose: o.onClose });
+    let s = null;
+    let current = null;
     // App.menuItems (settings.js) may add an entry, e.g. the update notice above « Réglages ».
     const items = (App.menuItems ? App.menuItems(o.items || []) : o.items || []).filter(Boolean);
     const hasIcons = items.some((it) => it !== '-' && it.icon);
@@ -708,18 +1019,21 @@
       else if (o.checks || !hasIcons) lead = it.on ? icon('check') : h('span', { style: { width: '22px', flex: 'none' } });
       const b = h(
         'button.menu-item' + (it.danger ? '.danger' : '') + (it.on ? '.on' : ''),
-        { type: 'button', disabled: !!it.disabled },
+        { type: 'button', disabled: !!it.disabled, 'aria-current': it.on ? 'true' : null },
         lead,
         h('span.mi-text', h('span', it.label), it.sub ? h('span.sub', it.sub) : null),
         it.on && it.icon ? icon('check', 'sm') : null,
         it.right || null
       );
+      if (it.on && !current) current = b;
       b.addEventListener('click', () => {
         s.close();
         if (it.onClick) App.run(it.onClick);
       });
       m.appendChild(b);
     }
+    // The check mark is only drawn, so the current choice is also exposed as such; keyboard focus starts on it.
+    s = App.sheet({ title: o.title, body: m, onClose: o.onClose, initialFocus: current });
     return s;
   };
 
@@ -749,6 +1063,7 @@
         }));
       }
       let s = null;
+      const cancel = App.btn('Annuler', { onClick: () => s.close() });
       const ok = App.btn(o.ok || 'Confirmer', {
         cls: o.danger ? 'danger-solid' : 'pri',
         onClick: () => {
@@ -757,10 +1072,12 @@
           resolve(vals);
         }
       });
+      // A destructive action is never what a stray Enter or Space should trigger, so focus starts on « Annuler ».
       s = App.sheet({
         title: o.title,
         body: body,
-        actions: [App.btn('Annuler', { onClick: () => s.close() }), ok],
+        actions: [cancel, ok],
+        initialFocus: o.danger ? cancel : null,
         onClose: () => {
           if (!done) resolve(false);
         }
@@ -786,15 +1103,19 @@
           if (e.key === 'Enter') submit();
         });
       }
+      if (!o.label) inp.setAttribute('aria-label', o.placeholder || o.title || 'Saisie');
+      // The dialog is announced first; the field takes focus once the sheet has slid in, as before.
       s = App.sheet({
         title: o.title,
         body: [o.message ? h('p.muted.wrap', o.message) : null, App.field(o.label, inp, o.hint)],
         actions: [App.btn('Annuler', { onClick: () => s.close() }), App.btn(o.ok || 'OK', { cls: 'pri', onClick: submit })],
+        initialFocus: 'dialog',
         onClose: () => {
           if (!done) resolve(null);
         }
       });
       setTimeout(() => {
+        if (s.closed) return;
         inp.focus();
         if (inp.select && o.selectAll !== false) inp.select();
       }, 260);
@@ -802,6 +1123,9 @@
   };
 
   // ---------- Tabs & page stacks ----------
+  // Everything the user reads or operates lives in #tabs: it is the main landmark of the page.
+  const tabsRoot = document.getElementById('tabs');
+  if (tabsRoot) tabsRoot.setAttribute('role', 'main');
   App.state = { tab: 'c411', fg: true, prevTab: 'c411' };
   App.tabs = {};
   App.registerTab = function (name, el, hooks) {
@@ -816,6 +1140,10 @@
     App.state.tab = name;
     for (const k in App.tabs) App.tabs[k].el.classList.toggle('hidden', k !== name);
     for (const e of overlays) e.ov.style.visibility = e.tab === name ? '' : 'hidden';
+    syncModal();
+    // Back on a tab whose dialog is still open: keyboard focus belongs in it.
+    const dlg = topEntry();
+    if (dlg && !dlg.ov.contains(document.activeElement)) focusEl(dlg.dlg);
     const t = App.tabs[name];
     if (t && t.hooks.onShow) {
       try {
@@ -872,7 +1200,8 @@
 
   App.page = function (o) {
     o = o || {};
-    const titleEl = h('div.title', o.title || '');
+    // The page title is the level-1 heading of the screen, and what is announced when the page opens.
+    const titleEl = h('div.title', { role: 'heading', 'aria-level': '1', tabindex: '-1' }, o.title || '');
     const subEl = h('div.subtitle', o.subtitle || '');
     const actions = h('div.head-actions');
     const backBtn = o.back
@@ -892,15 +1221,23 @@
       setTitle(t) {
         titleEl.textContent = t || '';
       },
+      // A details page shows its title in the header only once scrolled: this is the name screen readers get meanwhile.
+      setName(t) {
+        if (t) titleEl.setAttribute('aria-label', t);
+        else titleEl.removeAttribute('aria-label');
+      },
       setSub(t) {
         subEl.textContent = t || '';
       }
     };
   };
+  // Keyboard focus follows navigation: a page opens on its title (before its own onShow, which may focus something better), and going back
+  // returns to the control that led there.
   App.push = function (tabName, page) {
     const t = App.tabs[tabName];
     const prev = t.stack[t.stack.length - 1];
     if (prev) {
+      prev.lastFocus = !nothingFocused() && prev.el.contains(document.activeElement) ? document.activeElement : null;
       prev.el.classList.add('hidden');
       if (prev.onHide) prev.onHide();
     }
@@ -910,6 +1247,7 @@
     t.el.appendChild(page.el);
     page.el.getBoundingClientRect();
     page.el.classList.remove('enter');
+    if (prev && App.state.tab === tabName) focusTitle(page);
     if (page.onShow && App.state.tab === tabName) page.onShow();
     return page;
   };
@@ -917,11 +1255,17 @@
     const t = App.tabs[tabName || App.state.tab];
     if (!t || t.stack.length <= 1) return false;
     const p = t.stack.pop();
+    const hadFocus = nothingFocused() || p.el.contains(document.activeElement);
     if (p.onHide) p.onHide();
     if (p.onDestroy) p.onDestroy();
     p.el.remove();
     const top = t.stack[t.stack.length - 1];
     top.el.classList.remove('hidden');
+    if (hadFocus && t.name === App.state.tab) {
+      const back = top.lastFocus;
+      top.lastFocus = null;
+      if (!(back && back.isConnected !== false && !(coarse() && isTextEntry(back)) && focusEl(back))) focusTitle(top);
+    }
     if (top.onShow) top.onShow();
     App.emit('visibility', t.name);
     return true;
@@ -935,11 +1279,10 @@
   };
   // Back button: closes the top overlay of the visible tab, then pops a page. Returns true when handled.
   App.back = function () {
-    for (let i = overlays.length - 1; i >= 0; i--) {
-      if (overlays[i].tab === App.state.tab) {
-        overlays[i].close();
-        return true;
-      }
+    const top = topEntry();
+    if (top) {
+      top.close();
+      return true;
     }
     if (App.pop(App.state.tab)) return true;
     const t = App.tabs[App.state.tab];

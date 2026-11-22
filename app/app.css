@@ -2,7 +2,7 @@
 :root {
   --bg: #070d0b; --bg2: #0a1411; --card: #0e1915; --card2: #13221d; --card3: #1a2d26;
   --line: rgba(255, 255, 255, .07); --line2: rgba(255, 255, 255, .12);
-  --text: #e7f1ed; --muted: #97aca4; --dim: #65796f;
+  --text: #e7f1ed; --muted: #97aca4; --dim: #768d81; --ctl: #526c62;
   --pri: #1fd394; --pri2: #17b47d; --ink: #03140d; --pri-soft: rgba(31, 211, 148, .13); --pri-line: rgba(31, 211, 148, .38);
   --red: #f26363; --amber: #f5b544; --blue: #4ea8ff; --violet: #a78bfa; --pink: #f472b6; --cyan: #22d3ee; --gray: #7f8d88;
 }
@@ -149,7 +149,7 @@ button.item:active, .item.tap:active { background: var(--card2); }
 
 /* ---------- Forms ---------- */
 .input {
-  width: 100%; height: 46px; padding: 0 13px; border-radius: 11px; border: 1px solid var(--line2); background: var(--bg2);
+  width: 100%; height: 46px; padding: 0 13px; border-radius: 11px; border: 1px solid var(--ctl); background: var(--bg2);
   color: var(--text); font: inherit; font-size: 15px; outline: none; -webkit-appearance: none; appearance: none;
 }
 select.input { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2397aca4' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; background-size: 18px; padding-right: 38px; }
@@ -170,11 +170,11 @@ input[type=search]::-webkit-search-cancel-button { -webkit-appearance: none; }
 .switch .lbl { flex: 1; display: flex; flex-direction: column; font-weight: 550; }
 .switch .sub { font-size: 12px; color: var(--dim); font-weight: 400; }
 .switch input, .cb { -webkit-appearance: none; appearance: none; margin: 0; flex: none; }
-.switch input { width: 46px; height: 28px; border-radius: 14px; background: #24342e; position: relative; transition: background .2s; }
+.switch input { width: 46px; height: 28px; border-radius: 14px; background: #24342e; box-shadow: inset 0 0 0 1.5px var(--ctl); position: relative; transition: background .2s; }
 .switch input::after { content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #cbd6d1; transition: left .2s, background .2s; }
-.switch input:checked { background: var(--pri); }
+.switch input:checked { background: var(--pri); box-shadow: none; }
 .switch input:checked::after { left: 21px; background: #fff; }
-.cb { width: 22px; height: 22px; border-radius: 7px; border: 1.5px solid #3a4d46; background: var(--bg2); }
+.cb { width: 22px; height: 22px; border-radius: 7px; border: 1.5px solid var(--ctl); background: var(--bg2); }
 .cb:checked { background: var(--pri) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2303140d' stroke-width='3'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='m5 12.5 4.5 4.5L19 7.5'/%3E%3C/svg%3E") center/16px no-repeat; border-color: var(--pri); }
 .check-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; }
 .seg { display: flex; gap: 4px; padding: 4px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 12px; }
@@ -284,7 +284,7 @@ input[type=search]::-webkit-search-cancel-button { -webkit-appearance: none; }
 .poster { position: relative; aspect-ratio: 2 / 3; border-radius: 10px; overflow: hidden; background: linear-gradient(160deg, #173129, #0b1714); border: 1px solid var(--line); }
 .poster img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .poster img.broken { display: none; }
-.poster .ph { position: absolute; inset: 0; display: flex; align-items: center; align-items: safe center; justify-content: center; padding: 8px; text-align: center; font-size: 12px; color: var(--dim); font-weight: 650; word-break: break-word; overflow: hidden; }
+.poster .ph { position: absolute; inset: 0; display: flex; align-items: center; align-items: safe center; justify-content: center; padding: 8px; text-align: center; font-size: 12px; color: var(--muted); font-weight: 650; word-break: break-word; overflow: hidden; }
 .lrow .poster .ph { padding: 4px; font-size: 9.5px; line-height: 1.2; }
 .poster .st { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(0, 0, 0, .5); }
 .poster .st > i { display: block; height: 100%; background: var(--c, var(--pri)); }
@@ -453,3 +453,39 @@ body.upd-new .page > .head:not(.has-back) > .head-actions > .icon-btn[aria-label
 .dash-row .r { flex: none; font-size: 12.5px; color: var(--muted); }
 .dash-rule .main { text-align: left; }
 .dash-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+
+/* ---------- Accessibilité ---------- */
+/* Hidden on screen, still read by screen readers (live regions). */
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+/* Keyboard focus ring. An outline, not a box-shadow, so it survives forced-colors; :focus-visible keeps it off mouse and touch taps. */
+:focus-visible { outline: 2px solid var(--pri); outline-offset: 2px; }
+/* Titles and dialogs only take programmatic focus: they are not controls, no ring. */
+[tabindex="-1"]:focus-visible { outline: none; }
+/* An outer ring would be cut off by these clipping containers: draw it inside. */
+.group :focus-visible, .season :focus-visible, .qb-bar :focus-visible, .chips.inner :focus-visible, .seg :focus-visible { outline-offset: -2px; }
+/* The input has its own border: the ring sits over it instead of doubling it. */
+.input:focus-visible { outline-offset: -1px; }
+/* Focus not obscured (2.4.11): a focused row scrolls clear of the sticky search row, the FAB and the toasts. */
+.section, .scroll { scroll-padding-bottom: 84px; }
+.section:has(> .sticky), .scroll:has(> .sticky) { scroll-padding-top: 68px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .page, .backdrop, .sheet, .toast, .btn, .bar > i, .season-h .chev, .season-h > .ic, .upd-fold .ic, .switch input, .switch input::after { transition: none; }
+  /* Spinners say "loading": keep them, only slower. */
+  .spin { animation-duration: 1.6s; }
+  .btn.busy::after { animation-duration: 1.4s; }
+  .note.wait .ic { animation-duration: 2s; }
+}
+
+/* Windows contrast themes flatten background colours: redraw what only a background showed (switches, checkboxes, bars, selected state). */
+@media (forced-colors: active) {
+  .switch input, .cb { forced-color-adjust: none; background: Canvas; border: 2px solid ButtonText; box-shadow: none; }
+  .switch input::after { background: ButtonText; }
+  .switch input:checked, .cb:checked { background-color: Highlight; border-color: Highlight; }
+  .switch input:checked::after { background: HighlightText; }
+  .bar, .poster .st { forced-color-adjust: none; background: Canvas; border: 1px solid CanvasText; }
+  .bar > i, .poster .st > i { background: Highlight; }
+  .chip.on, .seg button.on, .toolbar .icon-btn.on, .menu-item.on { forced-color-adjust: none; background: Highlight; color: HighlightText; border-color: Highlight; }
+  .menu-item.on > .ic { color: HighlightText; }
+  .fab { border: 2px solid ButtonText; }
+}

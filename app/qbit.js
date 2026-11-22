@@ -573,6 +573,7 @@
   function buildMain() {
     const page = App.page({ title: 'qBittorrent' });
     const searchBtn = App.iconBtn('magnifying-glass', 'Rechercher', () => setSearch(!ui.searchOpen));
+    searchBtn.setAttribute('aria-expanded', 'false');
     const filterDot = h('span.dot.hidden');
     const filterBtn = App.iconBtn('funnel', 'Filtrer', () => askFilter());
     filterBtn.appendChild(filterDot);
@@ -587,10 +588,15 @@
     ];
     const selClose = App.iconBtn('x-mark', 'Quitter la sélection', () => endSelect());
 
-    const searchInput = App.input({ type: 'search', placeholder: 'Rechercher un torrent', enterkeyhint: 'search' });
+    const searchInput = App.input({ type: 'search', placeholder: 'Rechercher un torrent', ariaLabel: 'Rechercher un torrent', enterkeyhint: 'search' });
+    // Announced once typing pauses, so a screen reader is not flooded while a word is being typed.
+    const sayFound = App.debounce(() => {
+      if (prefs.q && store.loaded) App.sayResults(visibleList().length);
+    }, 800);
     searchInput.addEventListener('input', App.debounce(() => {
       prefs.q = searchInput.value;
       render();
+      sayFound();
     }, 150));
     const searchRow = h('div.hidden', { style: { padding: '0 12px 10px', flex: 'none' } }, h('div.search', App.icon('magnifying-glass'), searchInput));
 
@@ -602,8 +608,8 @@
     const chips = h('div.chips');
     const catTxt = h('span');
     const tagTxt = h('span');
-    const catChip = h('button.chip.on.hidden', { type: 'button', onclick: () => Q.setFilter({ cat: null }) }, App.icon('folder'), catTxt, App.icon('x-mark', 'xs'));
-    const tagChip = h('button.chip.on.hidden', { type: 'button', onclick: () => Q.setFilter({ tag: null }) }, App.icon('tag'), tagTxt, App.icon('x-mark', 'xs'));
+    const catChip = h('button.chip.on.hidden', { type: 'button', 'aria-pressed': 'true', onclick: () => Q.setFilter({ cat: null }) }, App.icon('folder'), catTxt, App.icon('x-mark', 'xs'));
+    const tagChip = h('button.chip.on.hidden', { type: 'button', 'aria-pressed': 'true', onclick: () => Q.setFilter({ tag: null }) }, App.icon('tag'), tagTxt, App.icon('x-mark', 'xs'));
     const hideTxt = h('span');
     const hideN = h('span.n');
     const hideOnIc = App.icon('eye-slash');
@@ -628,6 +634,7 @@
 
     const stateBox = h('div');
     const list = h('div.list');
+    App.pressableIn(list);
     const more = h('div.more.hidden');
     const scroll = h('div.scroll', stateBox, list, more);
     const fab = h('button.fab', { type: 'button', 'aria-label': 'Ajouter un torrent', onclick: () => App.run(() => Q.openAdd()) }, App.icon('plus'));
@@ -646,8 +653,14 @@
   }
 
   function showMore() {
+    // Activated from the keyboard, the button is replaced by the rows it adds: focus follows to the first of them.
+    const fromBtn = ui.more.contains(document.activeElement);
+    const first = ui.list.children.length;
     ui.limit += CHUNK;
     render();
+    const row = fromBtn ? ui.list.children[first] : null;
+    const main = row && row.querySelector('.main');
+    if (main) main.focus();
     if (ui.io) {
       // Re-observing reports the marker again, so a tall window keeps loading until it is out of reach.
       ui.io.unobserve(ui.more);
@@ -657,6 +670,7 @@
 
   function setSearch(open) {
     ui.searchOpen = open;
+    ui.searchBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     ui.searchRow.classList.toggle('hidden', !open);
     App.fill(ui.searchBtn, App.icon(open ? 'x-mark' : 'magnifying-glass'));
     if (open) {
@@ -682,6 +696,9 @@
   }
   function endSelect() {
     if (!selecting) return;
+    // The selection buttons go away: focus that was on one moves to the page title rather than to nothing.
+    const a = document.activeElement;
+    const lost = !!a && (ui.selClose.contains(a) || ui.page.actions.contains(a));
     selecting = false;
     selected.clear();
     ui.selClose.remove();
@@ -689,6 +706,7 @@
     App.fill(ui.page.actions, ui.normalActions);
     ui.fab.classList.remove('hidden');
     render();
+    if (lost) ui.page.titleEl.focus({ preventScroll: true });
   }
   function toggleSel(hash) {
     if (selected.has(hash)) selected.delete(hash);
@@ -866,7 +884,7 @@
 
   // ---------- Rendering ----------
   function makeRow(hash) {
-    const r = { hash: hash, sig: '', paused: null };
+    const r = { hash: hash, sig: '', paused: null, pr: null };
     r.cb = h('input.cb.hidden', { type: 'checkbox', tabindex: '-1', 'aria-hidden': 'true' });
     r.cb.style.pointerEvents = 'none';
     r.nm = h('div.nm');
@@ -879,7 +897,9 @@
     r.ratio = h('span');
     r.cat = h('span.dim');
     r.pbtn = App.iconBtn('pause', 'Mettre en pause', () => Q.togglePause(hash));
-    r.el = h('div.tor', { 'data-s': 'queued' }, r.cb, h('div.main', r.nm, r.bar, h('div.meta', r.st, r.sz, r.dn, r.up, r.eta, r.ratio, r.cat)), r.pbtn);
+    // The button role sits on .main, not on the row, so the pause button beside it is not nested in another control. Enter and Space come from the list (App.pressableIn).
+    r.main = h('div.main', { role: 'button', tabindex: '0' }, r.nm, r.bar, h('div.meta', r.st, r.sz, r.dn, r.up, r.eta, r.ratio, r.cat));
+    r.el = h('div.tor', { 'data-s': 'queued' }, r.cb, r.main, r.pbtn);
     r.el.addEventListener('click', () => {
       if (selecting) toggleSel(hash);
       else Q.openDetails(hash);
@@ -917,6 +937,13 @@
     r.el.classList.toggle('selected', sel);
     r.cb.classList.toggle('hidden', !selecting);
     r.cb.checked = sel;
+    // While selecting, a row is a toggle; otherwise it opens the torrent.
+    const pr = selecting ? String(sel) : null;
+    if (r.pr !== pr) {
+      r.pr = pr;
+      if (pr) r.main.setAttribute('aria-pressed', pr);
+      else r.main.removeAttribute('aria-pressed');
+    }
   }
   function stateContent(key) {
     const kind = key.split(':')[0];
@@ -984,7 +1011,7 @@
     const hideNames = Array.from(hideSet);
     const hideWhat = hideNames.length === 1 ? hideNames[0] : fmt.plural(hideNames.length, 'étiquette');
     ui.hideChip.classList.toggle('hidden', !hideTagged);
-    ui.hideChip.classList.toggle('on', prefs.hideOn);
+    App.setOn(ui.hideChip, prefs.hideOn);
     ui.hideChip.title = prefs.hideOn ? 'Afficher les torrents masqués' : 'Masquer ces torrents';
     ui.hideOnIc.classList.toggle('hidden', !prefs.hideOn);
     ui.hideX.classList.toggle('hidden', !prefs.hideOn);
@@ -995,7 +1022,7 @@
       const n = view.counts[i];
       const el = ui.chipEls[i];
       el.n.textContent = n;
-      el.classList.toggle('on', prefs.filter === f.k);
+      App.setOn(el, prefs.filter === f.k);
       el.classList.toggle('hidden', !!f.hideEmpty && !n && prefs.filter !== f.k);
     });
 
@@ -1033,10 +1060,12 @@
     if (from < 0 && kids.length > want.length) from = want.length;
     if (from >= 0) {
       // Rows before the first difference stay untouched, so a tick or "show more" only appends.
+      const restoreFocus = App.holdFocus(ui.list);
       while (kids.length > from) ui.list.lastChild.remove();
       const frag = document.createDocumentFragment();
       for (let i = from; i < want.length; i++) frag.appendChild(rows.get(want[i].hash).el);
       ui.list.appendChild(frag);
+      restoreFocus();
     }
     if (rows.size > want.length) {
       const keep = new Set(want.map((t) => t.hash));
@@ -1150,6 +1179,7 @@
     const files = (o.files || []).filter((f) => f && f.base64);
     const urls = h('textarea.input', {
       placeholder: 'magnet:?xt=urn:btih:…\nhttps://exemple.org/fichier.torrent',
+      'aria-label': 'Liens magnet ou URL de fichiers .torrent',
       autocapitalize: 'off',
       spellcheck: 'false',
       value: (o.urls || []).join('\n')
@@ -1218,7 +1248,7 @@
     const dlLim = App.input({ type: 'number', inputmode: 'numeric', placeholder: 'Illimitée' });
     const upLim = App.input({ type: 'number', inputmode: 'numeric', placeholder: 'Illimitée' });
     const half = (el) => h('div', { style: { flex: '1', minWidth: '0' } }, el);
-    const adv = h('div.hidden',
+    const adv = h('div.hidden', { role: 'group', 'aria-label': 'Options avancées', tabindex: '-1' },
       App.field('Renommer', rename, 'Uniquement pour un seul torrent.'),
       App.field('Disposition du contenu', layout),
       h('div', { style: { display: 'flex', gap: '10px' } }, half(App.field('Limite ↓ (Ko/s)', dlLim)), half(App.field('Limite ↑ (Ko/s)', upLim))),
@@ -1230,6 +1260,8 @@
       onClick: () => {
         adv.classList.remove('hidden');
         advBtn.classList.add('hidden');
+        // The button that had focus is gone: the options it reveals take it.
+        adv.focus({ preventScroll: true });
       }
     });
 

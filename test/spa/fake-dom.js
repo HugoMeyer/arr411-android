@@ -35,6 +35,14 @@ class FakeNode {
     o.parentNode = null;
     return o;
   }
+  // The node itself or one of its descendants.
+  contains(n) {
+    for (let x = n; x; x = x.parentNode) if (x === this) return true;
+    return false;
+  }
+  remove() {
+    if (this.parentNode) this.parentNode.removeChild(this);
+  }
 }
 
 class FakeText extends FakeNode {
@@ -48,14 +56,16 @@ class FakeText extends FakeNode {
 }
 
 class FakeElement extends FakeNode {
-  constructor(tag) {
+  constructor(tag, doc) {
     super();
+    this.ownerDocument = doc || null;
     this.localName = tag.toLowerCase();
     this.attrs = {};
     this.handlers = {};
     this.classes = [];
     this.checked = false;
     this.disabled = false;
+    this.inert = false;
     this.id = '';
     this.style = {
       setProperty(k, v) {
@@ -105,10 +115,40 @@ class FakeElement extends FakeNode {
   setAttribute(k, v) {
     if (k === 'class') this.className = v;
     else if (k === 'disabled') this.disabled = true;
+    else if (k === 'id') this.id = String(v);
     else this.attrs[k] = String(v);
   }
   getAttribute(k) {
+    if (k === 'id') return this.id || null;
     return k === 'class' ? this.className : k in this.attrs ? this.attrs[k] : null;
+  }
+  hasAttribute(k) {
+    return this.getAttribute(k) !== null;
+  }
+  removeAttribute(k) {
+    if (k === 'class') this.classes = [];
+    else if (k === 'disabled') this.disabled = false;
+    else if (k === 'id') this.id = '';
+    else delete this.attrs[k];
+  }
+  // As in a browser: not rendered (the `hidden` class is display:none in app.css) or detached means no boxes.
+  getClientRects() {
+    return isShown(this) && this.ownerDocument && this.ownerDocument.body.contains(this) ? [{}] : [];
+  }
+  getBoundingClientRect() {
+    return {};
+  }
+  // Only what a browser would let take focus: connected, rendered, not inert, and a control or an element with a tabindex.
+  focus() {
+    const doc = this.ownerDocument;
+    if (!doc || this.disabled || !doc.body.contains(this) || !isShown(this)) return;
+    for (let n = this; n; n = n.parentNode) if (n.inert || (n.style && n.style.visibility === 'hidden')) return;
+    const t = this.localName;
+    const takes = t === 'button' || t === 'select' || t === 'textarea' || (t === 'input' && this.getAttribute('type') !== 'hidden') || (t === 'a' && this.hasAttribute('href')) || this.hasAttribute('tabindex');
+    if (takes) doc.active = this;
+  }
+  blur() {
+    if (this.ownerDocument && this.ownerDocument.active === this) this.ownerDocument.active = null;
   }
   addEventListener(type, fn) {
     (this.handlers[type] = this.handlers[type] || []).push(fn);
@@ -154,11 +194,26 @@ class FakeSelect extends FakeElement {
 }
 
 function createDocument() {
+  const listeners = {};
   const doc = {
-    createElement: (tag) => (tag === 'select' ? new FakeSelect(tag) : new FakeElement(tag)),
-    createElementNS: (ns, tag) => new FakeElement(tag),
+    createElement: (tag) => (tag === 'select' ? new FakeSelect(tag, doc) : new FakeElement(tag, doc)),
+    createElementNS: (ns, tag) => new FakeElement(tag, doc),
     createTextNode: (t) => new FakeText(t),
-    getElementById: () => null
+    getElementById: () => null,
+    active: null,
+    // The focused element, or the body when nothing is (or the focused element left the document).
+    get activeElement() {
+      return doc.active && doc.body.contains(doc.active) ? doc.active : doc.body;
+    },
+    addEventListener(type, fn) {
+      (listeners[type] = listeners[type] || []).push(fn);
+    },
+    // No bubbling: a test dispatches a key at the document, where the SPA listens, with `target` set if it matters.
+    dispatchEvent(ev) {
+      const e = Object.assign({ target: doc.activeElement, stopPropagation() {}, preventDefault() {} }, ev);
+      for (const fn of (listeners[e.type] || []).slice()) fn(e);
+      return true;
+    }
   };
   doc.body = doc.createElement('body');
   return doc;

@@ -87,6 +87,7 @@
 - **Updates** (Settings → Mises à jour): Arr411 looks for a new release on GitHub about every 6 hours, downloads it, checks its size and SHA-256, then installs it by itself when Android allows it, or tells you when it needs a tap. You can also choose to be notified only, or switch the check off. See [Updates](#-updates).
 - **Quick Settings tile** « Vitesse alternative »: shows whether qBittorrent's alternative speed limits are on, and a tap switches them. The subtitle says *Activée* or *Désactivée*, or what is wrong: *Hors ligne*, *Identifiants refusés*, or *À configurer* (a tap then opens the settings). It uses the address and login of the qBittorrent settings. A long press opens the qBittorrent tab.
 - **App shortcuts**: long-press the Arr411 icon to jump straight to the qBittorrent, C411, Radarr, Sonarr or Lidarr tab.
+- **Keyboard and readability** (also in Arr411 Desktop, which shares this interface): every screen works with a keyboard (Tab, Enter, Space; Escape closes a dialog) and shows a focus ring only when you use one. Muted text has enough contrast, the system's *Remove animations* setting also stills the app, and Windows contrast themes are supported.
 
 ---
 

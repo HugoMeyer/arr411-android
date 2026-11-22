@@ -123,9 +123,15 @@
     const sep = root.indexOf('/') < 0 && root.indexOf('\\') >= 0 ? '\\' : '/';
     return root + sep + leaf;
   }
-  function colorIcon(name, color) {
+  // With a label the icon is the only place a status is written, so it gets a name; otherwise it is decoration.
+  function colorIcon(name, color, label) {
     const ic = App.icon(name);
     ic.style.color = COLOR_VAR[color || ''] || color;
+    if (label) {
+      ic.removeAttribute('aria-hidden');
+      ic.setAttribute('role', 'img');
+      ic.setAttribute('aria-label', label);
+    }
     return ic;
   }
   const act = App.actBtn;
@@ -391,10 +397,12 @@
       const sel = new Set(selected || []);
       const box = h('div.chips.inner', { style: { flexWrap: 'wrap', overflow: 'visible' } });
       function render() {
+        // The chips are rebuilt on every change: keyboard focus goes back to the same position.
+        const restoreFocus = App.keepPlace(box);
         App.clear(box);
         meta.tags.slice().sort((a, b) => coll.compare(a.label, b.label)).forEach((t) => {
           const on = sel.has(t.id);
-          const b = h('button.chip.sm' + (on ? '.on' : ''), { type: 'button' }, App.icon(on ? 'check' : 'tag', 'xs'), h('span', t.label));
+          const b = h('button.chip.sm' + (on ? '.on' : ''), { type: 'button', 'aria-pressed': on ? 'true' : 'false' }, App.icon(on ? 'check' : 'tag', 'xs'), h('span', t.label));
           b.addEventListener('click', () => {
             if (on) sel.delete(t.id);
             else sel.add(t.id);
@@ -416,6 +424,7 @@
           render();
         }));
         box.appendChild(add);
+        restoreFocus();
       }
       render();
       return { el: box, value: () => Array.from(sel) };
@@ -544,7 +553,7 @@
       root = { page: page, chips: chips, box: box, fab: fab, cur: null, built: {}, chipEls: {} };
       M.sections.forEach((s) => {
         const n = h('span.n.hidden');
-        const dot = h('span.dot.hidden');
+        const dot = h('span.dot.hidden', h('span.sr-only', ', problème détecté'));
         const b = h('button.chip', { type: 'button', onclick: () => M.showSection(s.key) }, h('span', s.label), n, dot);
         b.n = n;
         b.dot = dot;
@@ -586,7 +595,7 @@
       }
       root.cur = key;
       s.el.classList.remove('hidden');
-      for (const k in root.chipEls) root.chipEls[k].classList.toggle('on', k === key);
+      for (const k in root.chipEls) App.setOn(root.chipEls[k], k === key);
       App.fill(root.page.actions, s.actions || []);
       root.fab.classList.toggle('hidden', key !== 'lib');
       if (s.onShow && App.isTop(root.page)) s.onShow();
@@ -608,21 +617,28 @@
       const prefs = Object.assign({ view: 'grid', sort: 'added', rev: false, filter: 'all' }, App.pref(svc + '.lib', {}));
       const save = () => App.setPref(svc + '.lib', prefs);
       let q = '';
+      let shownN = 0;
       let searchOpen = false;
       let chunk = null;
       let sig = '';
       let stateKey = null;
       const el = h('div.section');
-      const input = App.input({ type: 'search', placeholder: 'Rechercher ' + M.one, enterkeyhint: 'search' });
+      const input = App.input({ type: 'search', placeholder: 'Rechercher ' + M.one, ariaLabel: 'Rechercher ' + M.one, enterkeyhint: 'search' });
+      // Announced once typing pauses, so a screen reader is not flooded while a word is being typed.
+      const sayFound = App.debounce(() => {
+        if (q && M.cache.items) App.sayResults(shownN);
+      }, 800);
       input.addEventListener('input', App.debounce(() => {
         q = input.value;
         render();
+        sayFound();
       }, 150));
       const searchRow = h('div.sticky.hidden', h('div.search', App.icon('magnifying-glass'), input));
       const stateBox = h('div');
       const list = h('div.grid');
       App.append(el, searchRow, stateBox, list);
       const searchBtn = App.iconBtn('magnifying-glass', 'Rechercher', () => setSearch(!searchOpen));
+      searchBtn.setAttribute('aria-expanded', 'false');
       const filterDot = h('span.dot.hidden');
       const filterBtn = App.iconBtn('funnel', 'Filtrer', () => filterMenu());
       filterBtn.appendChild(filterDot);
@@ -630,6 +646,7 @@
 
       function setSearch(open) {
         searchOpen = open;
+        searchBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
         searchRow.classList.toggle('hidden', !open);
         App.fill(searchBtn, App.icon(open ? 'x-mark' : 'magnifying-glass'));
         if (open) {
@@ -681,7 +698,14 @@
       }
       function render() {
         const c = M.cache;
-        filterDot.classList.toggle('hidden', prefs.filter === 'all');
+        const filtered = prefs.filter !== 'all';
+        filterDot.classList.toggle('hidden', !filtered);
+        // The dot is a visual cue only: the state is also in the name.
+        const filterName = filtered ? 'Filtrer (filtre actif)' : 'Filtrer';
+        if (filterBtn.getAttribute('aria-label') !== filterName) {
+          filterBtn.setAttribute('aria-label', filterName);
+          filterBtn.title = filterName;
+        }
         if (!M.configured()) {
           clearList();
           return setState('cfg', () => App.empty(M.icon, M.name + ' n’est pas configuré', 'Renseigne l’URL et la clé API de ' + M.name + ' dans les réglages.', [
@@ -701,6 +725,7 @@
         const s = [prefs.view, prefs.sort, prefs.rev, prefs.filter, q, c.ver].join('|');
         if (s === sig) return;
         const items = visibleItems();
+        shownN = items.length;
         clearList();
         sig = s;
         if (!items.length) {
@@ -813,7 +838,7 @@
           return true;
         },
         top() {
-          el.scrollTo({ top: 0, behavior: 'smooth' });
+          el.scrollTo({ top: 0, behavior: App.scrollBehavior() });
         }
       };
     }
@@ -831,6 +856,7 @@
       let gone = false;
       const page = App.page({ title: '', back: true });
       page.itemId = id;
+      if (x) page.setName(x.title);
       App.append(page.actions,
         App.iconBtn('magnifying-glass', 'Chercher sur C411', () => M.searchC411(x)),
         App.iconBtn('ellipsis-vertical', 'Plus d’actions', () => x && detailsMenu()));
@@ -853,11 +879,12 @@
       function render() {
         if (gone) return;
         if (!x) return App.fill(scroll, App.loading());
+        page.setName(x.title);
         const keep = scroll.scrollTop;
         const st = M.status(x);
         const rating = ratingOf(x);
         const ov = x.overview ? h('p.overview.clamp', x.overview) : null;
-        if (ov) ov.addEventListener('click', () => ov.classList.toggle('clamp'));
+        if (ov) App.pressable(ov, () => ov.setAttribute('aria-expanded', ov.classList.toggle('clamp') ? 'false' : 'true'), { expanded: false });
         App.fill(scroll,
           h('div.hero', App.img(M.cover(x, 'fanart'))),
           h('div.hero-info', M.poster(x, 500),
@@ -1063,22 +1090,27 @@
         const total = list.length;
         const color = total && have >= total ? 'var(--pri)' : have ? 'var(--amber)' : 'var(--gray)';
         const sub = [have + '/' + total + ' épisodes', future ? future + ' à venir' : '', size ? fmt.bytes(size) : ''].filter(Boolean).join(' · ');
-        const head = h('div.season-h', { role: 'button', tabindex: '0' },
-          h('div.main', h('div.t', n === 0 ? 'Épisodes spéciaux' : 'Saison ' + n), h('div.s', sub), App.bar(total ? have / total : 0, color)),
+        const open0 = openSeasons.has(n);
+        const main = h('div.main', { role: 'button', tabindex: '0', 'aria-expanded': open0 ? 'true' : 'false' }, h('div.t', n === 0 ? 'Épisodes spéciaux' : 'Saison ' + n), h('div.s', sub), App.bar(total ? have / total : 0, color));
+        App.pressable(main);
+        // The header is not the button itself because the actions button sits inside it.
+        const head = h('div.season-h', main,
           App.iconBtn('ellipsis-vertical', 'Actions de la saison', () => seasonMenu(n, fids)),
           h('span.chev', App.icon('chevron-down')));
         const body = h('div.season-b');
-        const wrap = h('div.season' + (openSeasons.has(n) ? '.open' : ''), head, body);
+        App.pressableIn(body);
+        const wrap = h('div.season' + (open0 ? '.open' : ''), head, body);
         let built = false;
         const build = () => {
           if (built) return;
           built = true;
           App.fill(body, list.map(epEl));
         };
-        if (openSeasons.has(n)) build();
+        if (open0) build();
         head.addEventListener('click', () => {
           const open = !wrap.classList.contains('open');
           wrap.classList.toggle('open', open);
+          main.setAttribute('aria-expanded', open ? 'true' : 'false');
           if (open) {
             openSeasons.add(n);
             build();
@@ -1090,7 +1122,7 @@
         const t = ts(e.airDateUtc);
         const f = e.episodeFileId ? epFiles.get(e.episodeFileId) : null;
         const future = !t || t > Date.now();
-        const ic = e.hasFile ? colorIcon('check-circle', 'green') : future ? colorIcon('clock', 'blue') : colorIcon('minus-circle', 'amber');
+        const ic = e.hasFile ? colorIcon('check-circle', 'green', 'Téléchargé') : future ? colorIcon('clock', 'blue', 'À venir') : colorIcon('minus-circle', 'amber', 'Manquant');
         const sub = [t ? fmt.date(e.airDateUtc) : 'Date inconnue', f ? qualityName(f.quality) : '', f && f.size ? fmt.bytes(f.size) : '',
           x && x.seriesType === 'anime' && e.absoluteEpisodeNumber ? 'abs ' + e.absoluteEpisodeNumber : ''].filter(Boolean).join(' · ');
         const el = h('div.ep', { role: 'button', tabindex: '0' }, h('span.num', pad(e.episodeNumber)), h('div.main', h('div.t', e.title || 'TBA'), h('div.s', sub)), ic);
@@ -1334,7 +1366,7 @@
       }
       const page = App.page({ title: isR ? 'Ajouter un film' : 'Ajouter une série', back: true });
       page.isAdd = true;
-      const input = App.input({ type: 'search', placeholder: isR ? 'Titre, lien IMDb ou TMDB…' : 'Titre, lien TVDB, IMDb ou TMDB…', enterkeyhint: 'search' });
+      const input = App.input({ type: 'search', placeholder: isR ? 'Titre, lien IMDb ou TMDB…' : 'Titre, lien TVDB, IMDb ou TMDB…', ariaLabel: isR ? 'Rechercher un film' : 'Rechercher une série', enterkeyhint: 'search' });
       const box = h('div');
       const scroll = h('div.scroll', h('div.sticky', h('div.search', App.icon('magnifying-glass'), input)), box);
       page.el.appendChild(scroll);
@@ -1362,6 +1394,7 @@
           results = e;
         }
         renderResults();
+        App.sayResults(results);
       }
       input.addEventListener('input', App.debounce(() => search(), 600));
       input.addEventListener('keydown', (e) => {
